@@ -16,8 +16,8 @@ func agentUnreachable(socket string, err error) string {
 	switch {
 	case errors.Is(statErr, fs.ErrNotExist):
 		fmt.Fprintf(&b, "The update agent is not running: there is no socket at %s.\n\n", socket)
-		fmt.Fprintf(&b, "  Start it:   sudo systemctl enable --now dup-agent\n")
-		fmt.Fprintf(&b, "  Check it:   systemctl status dup-agent\n")
+		fmt.Fprintf(&b, "  Start it:   sudo systemctl enable --now dup-agent dup\n")
+		fmt.Fprintf(&b, "  Check it:   systemctl status dup-agent dup\n")
 		fmt.Fprintf(&b, "  Why not:    sudo journalctl -u dup-agent -n 30 --no-pager\n")
 
 	case errors.Is(statErr, fs.ErrPermission):
@@ -30,11 +30,11 @@ func agentUnreachable(socket string, err error) string {
 
 	case info.Mode()&os.ModeSocket == 0:
 		fmt.Fprintf(&b, "%s exists but is not a socket. Remove it and restart the agent:\n\n", socket)
-		fmt.Fprintf(&b, "  sudo rm %s && sudo systemctl restart dup-agent\n", socket)
+		fmt.Fprintf(&b, "  sudo rm %s && sudo systemctl restart dup-agent dup\n", socket)
 
 	case errors.Is(err, syscall.ECONNREFUSED):
 		fmt.Fprintf(&b, "The socket at %s is stale: nothing is listening on it.\n\n", socket)
-		fmt.Fprintf(&b, "  Restart the agent:  sudo systemctl restart dup-agent\n")
+		fmt.Fprintf(&b, "  Restart the agent:  sudo systemctl restart dup-agent dup\n")
 		fmt.Fprintf(&b, "  Check why:          sudo journalctl -u dup-agent -n 30 --no-pager\n")
 
 	case errors.Is(err, fs.ErrPermission):

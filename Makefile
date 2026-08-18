@@ -6,7 +6,7 @@ AGENT_PKG := ./cmd/dup-agent
 VERSION := $(shell git describe --tags --always 2>/dev/null || echo "dev")
 COMMIT  := $(shell git rev-parse HEAD 2>/dev/null || echo "none")
 DATE    := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
-MODULE  := github.com/PatchMon/docker-updater
+MODULE  := github.com/9technologygroup/docker-updater
 
 LDFLAGS := -ldflags "-s -w \
 	-X '$(MODULE)/internal/version.Version=$(VERSION)' \

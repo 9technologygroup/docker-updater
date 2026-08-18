@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"syscall"
 
-	"github.com/PatchMon/docker-updater/internal/config"
+	"github.com/9technologygroup/docker-updater/internal/config"
 )
 
 type Identity struct {

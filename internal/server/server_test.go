@@ -16,8 +16,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/PatchMon/docker-updater/internal/config"
-	"github.com/PatchMon/docker-updater/internal/job"
+	"github.com/9technologygroup/docker-updater/internal/config"
+	"github.com/9technologygroup/docker-updater/internal/job"
+	"github.com/9technologygroup/docker-updater/internal/selfupdate"
 )
 
 const (
@@ -275,7 +276,7 @@ func TestParseWait(t *testing.T) {
 		"30s":    30 * time.Second,
 		"90":     90 * time.Second,
 		"2m":     2 * time.Minute,
-		"99h":    maxWait,
+		"99h":    MaxWait,
 		"-5s":    0,
 		"banana": 0,
 	}
@@ -358,4 +359,56 @@ type stubBackend struct{}
 
 func (stubBackend) Update(context.Context, *config.Target, job.Request, job.Sink) (job.State, string, error) {
 	return job.StateSucceeded, "stub", nil
+}
+
+// The version endpoint reads a cache and never calls out, so an authenticated
+// caller cannot drive requests to GitHub by polling it.
+func TestVersionEndpointMakesNoNetworkCall(t *testing.T) {
+	s := newTestServer(t, "").WithBuild("abc1234").
+		WithUpdateStatus(func() (selfupdate.Status, bool) {
+			return selfupdate.Status{
+				Latest:    selfupdate.Release{Tag: "v1.4.0", PublishedAt: time.Unix(1755432251, 0)},
+				Newer:     true,
+				CheckedAt: time.Unix(1755432251, 0),
+			}, true
+		})
+
+	rec := do(t, s, http.MethodGet, "/v1/version", "", map[string]string{"Authorization": "Bearer " + testToken})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{`"latest":"v1.4.0"`, `"update_available":true`, `"commit":"abc1234"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing %s: %s", want, body)
+		}
+	}
+}
+
+func TestVersionEndpointRequiresAuth(t *testing.T) {
+	rec := do(t, newTestServer(t, ""), http.MethodGet, "/v1/version", "", nil)
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want 401", rec.Code)
+	}
+}
+
+func TestVersionEndpointOmitsLatestWhenTheCacheIsEmpty(t *testing.T) {
+	s := newTestServer(t, "").WithUpdateStatus(func() (selfupdate.Status, bool) {
+		return selfupdate.Status{}, false
+	})
+	rec := do(t, s, http.MethodGet, "/v1/version", "", map[string]string{"Authorization": "Bearer " + testToken})
+	if strings.Contains(rec.Body.String(), "latest") {
+		t.Errorf("latest should be omitted with no cache: %s", rec.Body.String())
+	}
+}
+
+func TestTargetsReportPendingSoak(t *testing.T) {
+	since := time.Now().Add(-5 * time.Minute)
+	s := newTestServer(t, "").WithPending(func(string) (time.Time, []string, bool) {
+		return since, []string{"web"}, true
+	})
+	rec := do(t, s, http.MethodGet, "/v1/targets", "", map[string]string{"Authorization": "Bearer " + testToken})
+	if !strings.Contains(rec.Body.String(), "pending_since") {
+		t.Errorf("targets did not report the soak state: %s", rec.Body.String())
+	}
 }

@@ -14,43 +14,71 @@ import (
 const (
 	authWindow      = time.Minute
 	maxAuthFailures = 20
+	maxThrottleKeys = 4096
 )
 
-type authThrottle struct {
-	mu          sync.Mutex
+type throttleEntry struct {
 	failures    int
 	windowStart time.Time
 }
 
-func (a *authThrottle) allow() bool {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
-	now := time.Now()
-	if now.Sub(a.windowStart) > authWindow {
-		a.windowStart = now
-		a.failures = 0
-	}
-	return a.failures < maxAuthFailures
+// authThrottle counts failures per source address. A single global counter would
+// let one bad client lock every legitimate caller out for the rest of the window.
+type authThrottle struct {
+	mu      sync.Mutex
+	entries map[string]*throttleEntry
 }
 
-func (a *authThrottle) fail() {
+func (a *authThrottle) entry(key string, now time.Time) *throttleEntry {
+	if a.entries == nil {
+		a.entries = make(map[string]*throttleEntry)
+	}
+	e, ok := a.entries[key]
+	if !ok {
+		// Bounded so a flood of spoofed sources cannot grow the map without limit.
+		if len(a.entries) >= maxThrottleKeys {
+			a.sweep(now)
+		}
+		if len(a.entries) >= maxThrottleKeys {
+			a.entries = make(map[string]*throttleEntry)
+		}
+		e = &throttleEntry{windowStart: now}
+		a.entries[key] = e
+	}
+	if now.Sub(e.windowStart) > authWindow {
+		e.windowStart = now
+		e.failures = 0
+	}
+	return e
+}
+
+func (a *authThrottle) sweep(now time.Time) {
+	for k, e := range a.entries {
+		if now.Sub(e.windowStart) > authWindow {
+			delete(a.entries, k)
+		}
+	}
+}
+
+func (a *authThrottle) allow(key string) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	return a.entry(key, time.Now()).failures < maxAuthFailures
+}
 
-	now := time.Now()
-	if now.Sub(a.windowStart) > authWindow {
-		a.windowStart = now
-		a.failures = 0
-	}
-	a.failures++
+func (a *authThrottle) fail(key string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.entry(key, time.Now()).failures++
 }
 
 func (s *Server) authenticate(r *http.Request, body []byte) (string, bool) {
+	key := s.throttleKey(r)
+
 	if sig := r.Header.Get("X-Hub-Signature-256"); sig != "" {
 		secret := s.cfg.GitHubSecret()
 		if len(secret) == 0 || !verifySignature(secret, body, sig) {
-			s.throttle.fail()
+			s.throttle.fail(key)
 			return "", false
 		}
 		return "github", true
@@ -59,10 +87,17 @@ func (s *Server) authenticate(r *http.Request, body []byte) (string, bool) {
 	token := s.cfg.BearerToken()
 	presented := bearerToken(r.Header.Get("Authorization"))
 	if len(token) == 0 || presented == "" || !secretsEqual(token, []byte(presented)) {
-		s.throttle.fail()
+		s.throttle.fail(key)
 		return "", false
 	}
 	return "api", true
+}
+
+func (s *Server) throttleKey(r *http.Request) string {
+	if addr, ok := s.clientIP(r); ok {
+		return addr.String()
+	}
+	return "unknown"
 }
 
 func bearerToken(header string) string {

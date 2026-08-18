@@ -13,6 +13,10 @@ mkdir -p /etc/dup
 chown root:dup /etc/dup
 chmod 0750 /etc/dup
 
+mkdir -p /var/lib/dup
+chown dup:dup /var/lib/dup
+chmod 0755 /var/lib/dup
+
 for secret in bearer.token github.secret; do
     if [ ! -f "/etc/dup/${secret}" ]; then
         if command -v openssl >/dev/null 2>&1; then
@@ -25,6 +29,15 @@ for secret in bearer.token github.secret; do
     chmod 0640 "/etc/dup/${secret}"
 done
 
+# Earlier installs of this project used /usr/local/bin. Leaving those behind
+# shadows the packaged binaries on any PATH that prefers /usr/local/bin.
+for stale in /usr/local/bin/dup /usr/local/bin/dup-agent; do
+    if [ -f "${stale}" ]; then
+        rm -f "${stale}"
+        echo "removed stale ${stale} from an earlier install"
+    fi
+done
+
 if command -v systemctl >/dev/null 2>&1; then
     systemctl daemon-reload || true
     if systemctl is-enabled dup-agent >/dev/null 2>&1; then
@@ -35,7 +48,7 @@ fi
 if [ -f /etc/dup/config.yml ]; then
     cat <<'BANNER'
 
-dup upgraded. Validate and restart:
+dup upgraded. Validate and restart, in this order:
 
   sudo dup check
   sudo dup audit
@@ -48,24 +61,29 @@ else
 
 dup installed. Nothing is running yet, because there is no config.
 
+Next steps, in this order
+
   1. Copy the reference config and edit it for this host:
        sudo cp /etc/dup/config.example.yml /etc/dup/config.yml
        sudo chown root:dup /etc/dup/config.yml && sudo chmod 0640 /etc/dup/config.yml
        sudo $EDITOR /etc/dup/config.yml
 
-  2. Validate it:
+  2. Only if dup should terminate TLS itself, rather than sit behind a reverse
+     proxy on 127.0.0.1. Set 'tls: {self_signed: true}' in the config, then:
+       sudo dup cert
+
+  3. Validate the config:
        sudo dup check
 
-  3. Prove the dup account cannot rewrite what runs as root:
+  4. Prove the dup account cannot rewrite what runs as root:
        sudo dup audit
 
-  4. Start it:
+  5. Start it:
        sudo systemctl enable --now dup-agent dup
 
-  5. Confirm it is up:
+  6. Confirm it is up:
        systemctl status dup-agent dup
        dup list
-       journalctl -u dup -u dup-agent -f
 
   bearer token:  sudo cat /etc/dup/bearer.token
   docs:          https://github.com/9technologygroup/docker-updater

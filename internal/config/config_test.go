@@ -461,3 +461,51 @@ func TestSecretGroupIsCheckedAgainstTheServiceAccountNotTheCaller(t *testing.T) 
 		}
 	}
 }
+
+// An unmounted volume must not be fatal: dup check gates ExecStartPre for both
+// units, so failing here would take the whole service down over one absent path.
+func TestMissingTargetDirIsAWarningNotAnError(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "docker-compose.yml"), []byte("services: {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	body := "auth:\n  bearer_token: " + strings.Repeat("a", 32) + "\n" +
+		"targets:\n" +
+		"  - name: here\n    dir: " + dir + "\n" +
+		"  - name: gone\n    dir: " + filepath.Join(dir, "not-mounted") + "\n"
+
+	path := filepath.Join(t.TempDir(), "config.yml")
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	warnings := cfg.Warnings()
+	if len(warnings) != 1 {
+		t.Fatalf("got %d warnings, want 1: %v", len(warnings), warnings)
+	}
+	if !strings.Contains(warnings[0], "gone") {
+		t.Errorf("warning does not name the stack: %q", warnings[0])
+	}
+}
+
+func TestNonDirectoryTargetDirIsStillAnError(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "afile")
+	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	body := "auth:\n  bearer_token: " + strings.Repeat("a", 32) + "\n" +
+		"targets:\n  - name: a\n    dir: " + file + "\n"
+
+	path := filepath.Join(t.TempDir(), "config.yml")
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err == nil {
+		t.Fatal("a target dir that is a regular file was accepted")
+	}
+}

@@ -7,18 +7,28 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/PatchMon/docker-updater/internal/certs"
-	"github.com/PatchMon/docker-updater/internal/config"
+	"github.com/9technologygroup/docker-updater/internal/certs"
+	"github.com/9technologygroup/docker-updater/internal/config"
 )
 
 func runCert(args []string) error {
 	fs, configPath := newFlagSet("cert")
 	force := fs.Bool("force", false, "replace an existing certificate")
-	if err := fs.Parse(args); err != nil {
+	if err := noArgs(fs, args, "cert"); err != nil {
 		return err
 	}
 
-	cfg, err := config.LoadService(*configPath)
+	// Refuse before generating, not after. Writing the key first and then saying
+	// it landed with the wrong owner leaves a key the service cannot read, and
+	// the failure only surfaces later as a TLS error naming neither this command
+	// nor the ownership.
+	if os.Geteuid() != 0 {
+		return fmt.Errorf("run this as root.\n\n" +
+			"The private key must end up owned root:dup mode 0640, and only root can\n" +
+			"set that. Re-run:\n\n  sudo dup cert")
+	}
+
+	cfg, err := config.LoadBasic(*configPath)
 	if err != nil {
 		return err
 	}
@@ -36,7 +46,21 @@ func runCert(args []string) error {
 			*configPath, *configPath)
 	}
 	if !cfg.TLS.SelfSigned {
-		return fmt.Errorf("tls.self_signed is not set, so dup will not overwrite %s; it expects the certificate you configured to be one you manage", cfg.TLS.CertFile)
+		return fmt.Errorf("tls.self_signed is not set, so dup will not overwrite %s.\n\n"+
+			"It expects the certificate you configured to be one you manage. Put your\n"+
+			"certificate and key at:\n\n  %s\n  %s\n\n"+
+			"Or set tls.self_signed: true in %s to have dup generate a pair instead",
+			cfg.TLS.CertFile, cfg.TLS.CertFile, cfg.TLS.KeyFile, *configPath)
+	}
+	if cfg.AgentPeerUser == "" {
+		return fmt.Errorf("agent_peer_user is not set in %s, so dup cannot tell which account\n"+
+			"should be able to read the key. Add 'agent_peer_user: dup' and re-run", *configPath)
+	}
+	gid, err := lookupGID(cfg.AgentPeerUser)
+	if err != nil {
+		return fmt.Errorf("agent_peer_user %q does not resolve to an account on this host: %w\n\n"+
+			"The key would be unreadable by the service. Create the account first, or\n"+
+			"correct agent_peer_user in %s", cfg.AgentPeerUser, err, *configPath)
 	}
 
 	if certs.Exists(cfg.TLS.CertFile, cfg.TLS.KeyFile) && !*force {
@@ -55,13 +79,6 @@ func runCert(args []string) error {
 		hosts = certs.DefaultHosts(cfg.Listen)
 	}
 
-	gid := -1
-	if cfg.AgentPeerUser != "" {
-		if g, err := lookupGID(cfg.AgentPeerUser); err == nil {
-			gid = g
-		}
-	}
-
 	result, err := certs.Generate(cfg.TLS.CertFile, cfg.TLS.KeyFile, hosts, gid)
 	if err != nil {
 		return err
@@ -69,13 +86,11 @@ func runCert(args []string) error {
 
 	fmt.Printf("generated a self-signed certificate\n")
 	printCert(result)
-	if os.Geteuid() != 0 {
-		fmt.Printf("\nNot running as root, so ownership was left as-is.\n")
-		fmt.Printf("In production run this as root so the key ends up root:%s 0640.\n", cfg.AgentPeerUser)
-	}
-	fmt.Printf("\nTLS is enabled in %s, so dup will serve %s once restarted:\n\n", *configPath, apiURL(cfg))
-	fmt.Printf("  sudo systemctl restart dup\n")
-	fmt.Printf("  dup check\n")
+	fmt.Printf("\nkey owned root:%s mode 0640\n", cfg.AgentPeerUser)
+	fmt.Printf("\nNext\n\n")
+	fmt.Printf("  sudo dup check\n")
+	fmt.Printf("  sudo systemctl restart dup-agent dup\n")
+	fmt.Printf("\ndup will then serve %s\n", apiURL(cfg))
 	fmt.Printf("\nThis is self-signed, so clients will not trust it until you tell them to.\n")
 	fmt.Printf("In n8n, either import %s as a trusted certificate or disable verification for this host only.\n", result.CertFile)
 	fmt.Printf("Pin the fingerprint above rather than turning verification off everywhere.\n")

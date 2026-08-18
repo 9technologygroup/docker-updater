@@ -7,9 +7,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/PatchMon/docker-updater/internal/config"
-	"github.com/PatchMon/docker-updater/internal/job"
-	"github.com/PatchMon/docker-updater/internal/wire"
+	"github.com/9technologygroup/docker-updater/internal/config"
+	"github.com/9technologygroup/docker-updater/internal/job"
+	"github.com/9technologygroup/docker-updater/internal/wire"
 )
 
 const startupJitter = 90 * time.Second

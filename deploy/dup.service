@@ -1,6 +1,6 @@
 [Unit]
 Description=dup API (unprivileged)
-Documentation=https://github.com/PatchMon/docker-updater
+Documentation=https://github.com/9technologygroup/docker-updater
 After=network-online.target dup-agent.service
 Wants=network-online.target
 Requires=dup-agent.service
@@ -10,6 +10,10 @@ Type=simple
 User=dup
 Group=dup
 ExecStart=/usr/bin/dup serve --config /etc/dup/config.yml
+# ProtectSystem=strict makes the whole filesystem read-only, so the update-check
+# cache has nowhere to live without this.
+StateDirectory=dup
+StateDirectoryMode=0755
 Restart=always
 RestartSec=5
 TimeoutStopSec=60

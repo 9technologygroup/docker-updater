@@ -14,22 +14,26 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/PatchMon/docker-updater/internal/agent"
-	"github.com/PatchMon/docker-updater/internal/audit"
-	"github.com/PatchMon/docker-updater/internal/certs"
-	"github.com/PatchMon/docker-updater/internal/config"
-	"github.com/PatchMon/docker-updater/internal/job"
-	"github.com/PatchMon/docker-updater/internal/notify"
-	"github.com/PatchMon/docker-updater/internal/schedule"
-	"github.com/PatchMon/docker-updater/internal/server"
-	"github.com/PatchMon/docker-updater/internal/version"
+	"github.com/9technologygroup/docker-updater/internal/agent"
+	"github.com/9technologygroup/docker-updater/internal/audit"
+	"github.com/9technologygroup/docker-updater/internal/certs"
+	"github.com/9technologygroup/docker-updater/internal/config"
+	"github.com/9technologygroup/docker-updater/internal/job"
+	"github.com/9technologygroup/docker-updater/internal/notify"
+	"github.com/9technologygroup/docker-updater/internal/schedule"
+	"github.com/9technologygroup/docker-updater/internal/selfupdate"
+	"github.com/9technologygroup/docker-updater/internal/server"
+	"github.com/9technologygroup/docker-updater/internal/version"
 )
 
-const serveShutdownGrace = 30 * time.Second
+const (
+	serveShutdownGrace = 30 * time.Second
+	updateCheckEvery   = 24 * time.Hour
+)
 
 func runServe(args []string) error {
 	fs, configPath := newFlagSet("serve")
-	if err := fs.Parse(args); err != nil {
+	if err := noArgs(fs, args, "serve"); err != nil {
 		return err
 	}
 
@@ -68,10 +72,19 @@ func runServe(args []string) error {
 	pingCancel()
 
 	manager := job.NewManager(client, store, n, log)
-	srv := server.New(cfg, manager, log, host, version.Short())
-
 	scheduler := schedule.New(cfg, client, manager, log)
+
+	checker := selfupdate.New()
+	srv := server.New(cfg, manager, log, host, version.Short()).
+		WithBuild(version.ShortCommit()).
+		WithUpdateStatus(func() (selfupdate.Status, bool) { return checker.Cached(version.Short()) }).
+		WithPending(func(target string) (time.Time, []string, bool) {
+			p, ok := scheduler.PendingFor(target)
+			return p.Since, p.Services, ok
+		})
+
 	go scheduler.Run(ctx)
+	go watchForNewRelease(ctx, checker, log)
 
 	httpServer := &http.Server{
 		Addr:              cfg.Listen,
@@ -133,9 +146,47 @@ func runServe(args []string) error {
 	if err := httpServer.Shutdown(shutdownCtx); err != nil {
 		log.Warn("http shutdown", "error", err)
 	}
-	store.DrainRunning(shutdownCtx)
+	// Its own budget. Shutdown may have consumed all of shutdownCtx, which would
+	// leave the drain no time to do anything.
+	drainCtx, drainCancel := context.WithTimeout(context.Background(), serveShutdownGrace)
+	defer drainCancel()
+	store.DrainRunning(drainCtx)
 	log.Info("stopped")
 	return nil
+}
+
+// watchForNewRelease keeps the update-check cache warm so dup version and
+// GET /v1/version answer instantly, and logs once when a newer release lands.
+func watchForNewRelease(ctx context.Context, checker *selfupdate.Checker, log *slog.Logger) {
+	if selfupdate.Disabled() {
+		return
+	}
+	ticker := time.NewTicker(updateCheckEvery)
+	defer ticker.Stop()
+
+	for {
+		checkCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		status, err := checker.Check(checkCtx, version.Short(), false)
+		cancel()
+
+		switch {
+		case err != nil:
+			log.Debug("could not check for a newer dup", "error", err)
+		case status.Newer:
+			log.Info("a newer dup is available",
+				"current", status.Current, "latest", status.Latest.Tag,
+				"released", status.Latest.PublishedAt.Format(time.DateOnly),
+				"upgrade", "re-run install.sh, or apt install --only-upgrade dup")
+		default:
+			log.Debug("dup is up to date", "version", status.Current)
+		}
+
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
 }
 
 func checkListen(cfg *config.Config) error {

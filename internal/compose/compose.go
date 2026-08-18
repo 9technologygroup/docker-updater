@@ -11,7 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/PatchMon/docker-updater/internal/config"
+	"github.com/9technologygroup/docker-updater/internal/config"
 )
 
 const maxOutputBytes = 64 << 10

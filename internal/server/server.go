@@ -11,12 +11,19 @@ import (
 	"strings"
 	"time"
 
-	"github.com/PatchMon/docker-updater/internal/config"
-	"github.com/PatchMon/docker-updater/internal/job"
+	"github.com/9technologygroup/docker-updater/internal/config"
+	"github.com/9technologygroup/docker-updater/internal/job"
+	"github.com/9technologygroup/docker-updater/internal/selfupdate"
 )
 
 const (
-	maxWait     = 5 * time.Minute
+	// MaxWait is how long the API will hold an update request open. The CLI
+	// clamps --wait to it so a longer wait is refused up front rather than
+	// silently shortened here.
+	MaxWait = 5 * time.Minute
+	// MaxJobLimit bounds ?limit on the job listing.
+	MaxJobLimit = 200
+
 	defaultWait = 0
 )
 
@@ -26,7 +33,32 @@ type Server struct {
 	log      *slog.Logger
 	host     string
 	version  string
+	commit   string
 	throttle authThrottle
+
+	updateStatus func() (selfupdate.Status, bool)
+	pending      func(target string) (time.Time, []string, bool)
+}
+
+// WithBuild records the commit reported by GET /v1/version.
+func (s *Server) WithBuild(commit string) *Server {
+	s.commit = commit
+	return s
+}
+
+// WithUpdateStatus supplies the newest known release. It must read a cache and
+// never make a network call, so an authenticated caller cannot make dup poll
+// GitHub on demand.
+func (s *Server) WithUpdateStatus(fn func() (selfupdate.Status, bool)) *Server {
+	s.updateStatus = fn
+	return s
+}
+
+// WithPending supplies the soak state for a target: when the update was first
+// seen, what changed, and whether anything is waiting at all.
+func (s *Server) WithPending(fn func(target string) (time.Time, []string, bool)) *Server {
+	s.pending = fn
+	return s
 }
 
 func New(cfg *config.Config, exec *job.Manager, log *slog.Logger, host, version string) *Server {
@@ -40,6 +72,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /v1/targets/{target}/update", s.protected(s.handleUpdate))
 	mux.Handle("GET /v1/targets/{target}/status", s.protected(s.handleTargetStatus))
 	mux.Handle("GET /v1/jobs", s.protected(s.handleListJobs))
+	mux.Handle("GET /v1/version", s.protected(s.handleVersion))
 	mux.Handle("GET /v1/jobs/{id}", s.protected(s.handleGetJob))
 	return s.recoverer(s.accessLog(s.restrictSource(s.cors(mux))))
 }
@@ -53,7 +86,7 @@ type requestContext struct {
 
 func (s *Server) protected(next handlerFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !s.throttle.allow() {
+		if !s.throttle.allow(s.throttleKey(r)) {
 			w.Header().Set("Retry-After", "60")
 			writeError(w, http.StatusTooManyRequests, "too many failed authentication attempts, try again shortly")
 			return
@@ -79,16 +112,39 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
+func (s *Server) handleVersion(w http.ResponseWriter, _ *http.Request, _ requestContext) {
+	out := map[string]any{"current": s.version}
+	if s.commit != "" {
+		out["commit"] = s.commit
+	}
+	if s.updateStatus != nil {
+		if st, ok := s.updateStatus(); ok && st.Latest.Tag != "" {
+			out["latest"] = st.Latest.Tag
+			out["update_available"] = st.Newer
+			if !st.Latest.PublishedAt.IsZero() {
+				out["latest_released"] = st.Latest.PublishedAt
+			}
+			if !st.CheckedAt.IsZero() {
+				out["checked_at"] = st.CheckedAt
+			}
+		}
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
 func (s *Server) handleListTargets(w http.ResponseWriter, _ *http.Request, _ requestContext) {
 	type targetView struct {
-		Name          string   `json:"name"`
-		Dir           string   `json:"dir"`
-		Services      []string `json:"services,omitempty"`
-		ImageTagEnv   string   `json:"image_tag_env,omitempty"`
-		Rollback      bool     `json:"rollback"`
-		HealthTimeout string   `json:"health_timeout"`
-		Busy          bool     `json:"busy"`
-		RunningJob    string   `json:"running_job,omitempty"`
+		Name           string     `json:"name"`
+		Dir            string     `json:"dir"`
+		Services       []string   `json:"services,omitempty"`
+		ImageTagEnv    string     `json:"image_tag_env,omitempty"`
+		Rollback       bool       `json:"rollback"`
+		HealthTimeout  string     `json:"health_timeout"`
+		Busy           bool       `json:"busy"`
+		RunningJob     string     `json:"running_job,omitempty"`
+		PendingSince   *time.Time `json:"pending_since,omitempty"`
+		PendingApplies *time.Time `json:"pending_applies_at,omitempty"`
+		PendingChanged []string   `json:"pending_changed,omitempty"`
 	}
 
 	views := make([]targetView, 0, len(s.cfg.Targets))
@@ -104,6 +160,14 @@ func (s *Server) handleListTargets(w http.ResponseWriter, _ *http.Request, _ req
 		if running, busy := s.exec.Store().Running(t.Name); busy {
 			v.Busy = true
 			v.RunningJob = running.ID()
+		}
+		if s.pending != nil {
+			if since, changed, ok := s.pending(t.Name); ok {
+				applies := since.Add(t.SoakWindow())
+				v.PendingSince = &since
+				v.PendingApplies = &applies
+				v.PendingChanged = changed
+			}
 		}
 		views = append(views, v)
 	}
@@ -131,7 +195,7 @@ func (s *Server) handleTargetStatus(w http.ResponseWriter, r *http.Request, _ re
 func (s *Server) handleListJobs(w http.ResponseWriter, r *http.Request, _ requestContext) {
 	limit := 25
 	if v := r.URL.Query().Get("limit"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 200 {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= MaxJobLimit {
 			limit = n
 		}
 	}
@@ -316,8 +380,8 @@ func parseWait(v string) time.Duration {
 	if d < 0 {
 		return defaultWait
 	}
-	if d > maxWait {
-		return maxWait
+	if d > MaxWait {
+		return MaxWait
 	}
 	return d
 }

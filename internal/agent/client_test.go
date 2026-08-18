@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/PatchMon/docker-updater/internal/job"
+	"github.com/9technologygroup/docker-updater/internal/job"
 )
 
 type captureSink struct {

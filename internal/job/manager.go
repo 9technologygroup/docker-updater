@@ -5,7 +5,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/PatchMon/docker-updater/internal/config"
+	"github.com/9technologygroup/docker-updater/internal/config"
 )
 
 type Notifier interface {

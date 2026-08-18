@@ -2,7 +2,9 @@ package config
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
+	"io/fs"
 	"net/netip"
 	"net/url"
 	"os"
@@ -53,7 +55,13 @@ type Config struct {
 	byName         map[string]*Target
 	allowFrom      []netip.Prefix
 	trustedProxies []netip.Prefix
+	warnings       []string
 }
+
+// Warnings are problems that do not stop dup running. A stack directory that is
+// not mounted yet is the motivating case: failing here would gate ExecStartPre
+// and keep both services down over one absent volume.
+func (c *Config) Warnings() []string { return c.warnings }
 
 type TLS struct {
 	CertFile   string   `yaml:"cert_file"`
@@ -168,10 +176,17 @@ func LoadAgent(path string) (*Config, error) {
 	return load(path, options{checkPaths: true})
 }
 
+// LoadBasic parses and validates the config without touching the auth secrets.
+// Certificate generation has nothing to do with bearer tokens, and reading the
+// secret files needs privileges the command may not have yet.
+func LoadBasic(path string) (*Config, error) {
+	return load(path, options{})
+}
+
 func load(path string, opt options) (*Config, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("read config: %w", err)
+		return nil, readConfigError(path, err)
 	}
 
 	var c Config
@@ -453,26 +468,30 @@ func (c *Config) validateTargets(checkPaths bool) error {
 		}
 		t.Dir = filepath.Clean(t.Dir)
 
-		if err := validateProjectFile(t.Name, "compose_file", t.Dir, t.ComposeFile, checkPaths); err != nil {
-			return err
-		}
-		if err := validateProjectFile(t.Name, "env_file", t.Dir, t.EnvFile, checkPaths); err != nil {
-			return err
-		}
-
+		dirPresent := true
 		if checkPaths {
 			info, err := os.Stat(t.Dir)
-			if err != nil {
+			switch {
+			case errors.Is(err, fs.ErrNotExist):
+				dirPresent = false
+				c.warnings = append(c.warnings, fmt.Sprintf("stack %q points at %s, which does not exist", t.Name, t.Dir))
+			case err != nil:
 				return fmt.Errorf("target %q: dir: %w", t.Name, err)
-			}
-			if !info.IsDir() {
+			case !info.IsDir():
 				return fmt.Errorf("target %q: dir %s is not a directory", t.Name, t.Dir)
 			}
-			if t.ComposeFile == "" {
+			if dirPresent && t.ComposeFile == "" {
 				if err := requireDefaultComposeFile(t); err != nil {
 					return err
 				}
 			}
+		}
+
+		if err := validateProjectFile(t.Name, "compose_file", t.Dir, t.ComposeFile, checkPaths && dirPresent); err != nil {
+			return err
+		}
+		if err := validateProjectFile(t.Name, "env_file", t.Dir, t.EnvFile, checkPaths && dirPresent); err != nil {
+			return err
 		}
 
 		for _, s := range t.Services {
@@ -616,3 +635,22 @@ func (c *Config) BearerToken() []byte  { return c.Auth.bearer }
 func (c *Config) GitHubSecret() []byte { return c.Auth.ghSecret }
 
 func ValidImageTag(tag string) bool { return imageTagRe.MatchString(tag) }
+
+func readConfigError(path string, err error) error {
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return fmt.Errorf("there is no config at %s.\n\n"+
+			"Create one from the reference that ships with dup:\n\n"+
+			"  sudo cp /etc/dup/config.example.yml %s\n"+
+			"  sudo chown root:dup %s && sudo chmod 0640 %s\n"+
+			"  sudo $EDITOR %s\n\n"+
+			"Then:  sudo dup check", path, path, path, path, path)
+	case errors.Is(err, fs.ErrPermission):
+		return fmt.Errorf("not allowed to read %s.\n\n"+
+			"It is owned root:dup and not world readable on purpose: it names every\n"+
+			"stack dup may restart. Either run the command with sudo, or join the group:\n\n"+
+			"  sudo usermod -aG dup $USER   (then log out and back in)", path)
+	default:
+		return fmt.Errorf("read config %s: %w", path, err)
+	}
+}

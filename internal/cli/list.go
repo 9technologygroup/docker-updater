@@ -3,21 +3,31 @@ package cli
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"os"
 	"strings"
 	"text/tabwriter"
 	"time"
 
-	"github.com/PatchMon/docker-updater/internal/agent"
-	"github.com/PatchMon/docker-updater/internal/config"
-	"github.com/PatchMon/docker-updater/internal/version"
-	"github.com/PatchMon/docker-updater/internal/wire"
+	"github.com/9technologygroup/docker-updater/internal/agent"
+	"github.com/9technologygroup/docker-updater/internal/config"
+	"github.com/9technologygroup/docker-updater/internal/version"
+	"github.com/9technologygroup/docker-updater/internal/wire"
 )
+
+type targetView struct {
+	Name           string     `json:"name"`
+	Busy           bool       `json:"busy"`
+	RunningJob     string     `json:"running_job,omitempty"`
+	PendingSince   *time.Time `json:"pending_since,omitempty"`
+	PendingApplies *time.Time `json:"pending_applies_at,omitempty"`
+	PendingChanged []string   `json:"pending_changed,omitempty"`
+}
 
 func runList(args []string) error {
 	fs, configPath := newFlagSet("list")
 	all := fs.Bool("all", false, "also list compose projects that dup already covers")
-	if err := fs.Parse(args); err != nil {
+	if err := noArgs(fs, args, "list"); err != nil {
 		return err
 	}
 
@@ -28,7 +38,8 @@ func runList(args []string) error {
 
 	printHeader(cfg)
 	printTargets(cfg)
-	printMissingDirs(cfg, *configPath)
+	printWarnings(cfg)
+	printActivity(cfg)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -77,25 +88,60 @@ func printTargets(cfg *config.Config) {
 	_ = w.Flush()
 }
 
-func printMissingDirs(cfg *config.Config, configPath string) {
-	var missing []*config.Target
-	for _, t := range cfg.Targets {
-		if info, err := os.Stat(t.Dir); err != nil || !info.IsDir() {
-			missing = append(missing, t)
-		}
-	}
-	if len(missing) == 0 {
+// printActivity shows what the scheduler is holding. An update that has been
+// detected and is soaking is otherwise invisible until it applies.
+func printActivity(cfg *config.Config) {
+	views, err := fetchTargets(cfg)
+	if err != nil {
 		return
 	}
 
-	fmt.Printf("\n%d %s point at a directory that does not exist:\n",
-		len(missing), plural(len(missing), "stack", "stacks"))
+	var pending, running []targetView
+	for _, v := range views {
+		switch {
+		case v.Busy:
+			running = append(running, v)
+		case v.PendingApplies != nil:
+			pending = append(pending, v)
+		}
+	}
+	if len(pending) == 0 && len(running) == 0 {
+		return
+	}
+
+	fmt.Printf("\nIn flight\n")
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	for _, t := range missing {
-		_, _ = fmt.Fprintf(w, "  %s\t%s\n", t.Name, t.Dir)
+	for _, v := range running {
+		_, _ = fmt.Fprintf(w, "  %s\tupdating now\tjob %s\n", v.Name, v.RunningJob)
+	}
+	for _, v := range pending {
+		when := "now"
+		if remaining := time.Until(*v.PendingApplies); remaining > 0 {
+			when = "in " + short(remaining.Round(time.Minute))
+		}
+		_, _ = fmt.Fprintf(w, "  %s\tupdate waiting out its soak\tapplies %s\t%s\n",
+			v.Name, when, joinOr(v.PendingChanged, "unknown services"))
 	}
 	_ = w.Flush()
-	fmt.Printf("\nEdit %s so the stacks match this host, then run: sudo dup check\n", configPath)
+}
+
+// fetchTargets is best effort. dup list is useful with the API down, so a
+// failure here drops the activity section rather than the whole command.
+func fetchTargets(cfg *config.Config) ([]targetView, error) {
+	client, err := newAPIClient(cfg)
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var out struct {
+		Targets []targetView `json:"targets"`
+	}
+	if err := client.do(ctx, http.MethodGet, "/v1/targets", "", &out); err != nil {
+		return nil, err
+	}
+	return out.Targets, nil
 }
 
 func printCoverage(result wire.DiscoverResult, all bool) {

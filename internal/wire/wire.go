@@ -1,6 +1,6 @@
 package wire
 
-import "github.com/PatchMon/docker-updater/internal/job"
+import "github.com/9technologygroup/docker-updater/internal/job"
 
 const (
 	ExecPath     = "/v1/exec"

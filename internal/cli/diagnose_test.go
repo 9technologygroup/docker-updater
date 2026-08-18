@@ -9,7 +9,7 @@ import (
 	"syscall"
 	"testing"
 
-	"github.com/PatchMon/docker-updater/internal/config"
+	"github.com/9technologygroup/docker-updater/internal/config"
 )
 
 func TestAgentUnreachableSaysTheAgentIsNotRunning(t *testing.T) {

@@ -14,11 +14,11 @@ import (
 	"path/filepath"
 	"sync"
 
-	"github.com/PatchMon/docker-updater/internal/compose"
-	"github.com/PatchMon/docker-updater/internal/config"
-	"github.com/PatchMon/docker-updater/internal/discover"
-	"github.com/PatchMon/docker-updater/internal/job"
-	"github.com/PatchMon/docker-updater/internal/wire"
+	"github.com/9technologygroup/docker-updater/internal/compose"
+	"github.com/9technologygroup/docker-updater/internal/config"
+	"github.com/9technologygroup/docker-updater/internal/discover"
+	"github.com/9technologygroup/docker-updater/internal/job"
+	"github.com/9technologygroup/docker-updater/internal/wire"
 )
 
 const (
