@@ -35,17 +35,21 @@ type Scheduler struct {
 	starter Starter
 	log     *slog.Logger
 
-	mu      sync.Mutex
-	pending map[string]Pending
+	mu        sync.Mutex
+	pending   map[string]Pending
+	nextCheck map[string]time.Time
+	lastCheck map[string]time.Time
 }
 
 func New(cfg *config.Config, checker Checker, starter Starter, log *slog.Logger) *Scheduler {
 	return &Scheduler{
-		cfg:     cfg,
-		checker: checker,
-		starter: starter,
-		log:     log,
-		pending: make(map[string]Pending),
+		cfg:       cfg,
+		checker:   checker,
+		starter:   starter,
+		log:       log,
+		pending:   make(map[string]Pending),
+		nextCheck: make(map[string]time.Time),
+		lastCheck: make(map[string]time.Time),
 	}
 }
 
@@ -62,6 +66,28 @@ func (s *Scheduler) PendingFor(target string) (Pending, bool) {
 	defer s.mu.Unlock()
 	p, ok := s.pending[target]
 	return p, ok
+}
+
+// Timing reports when this target was last checked for a new image and when it
+// will be checked next. Without it there is no way to answer "how long until it
+// looks again", because the first check is jittered and the ticker keeps that
+// offset for the life of the process.
+func (s *Scheduler) Timing(target string) (last, next time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.lastCheck[target], s.nextCheck[target]
+}
+
+func (s *Scheduler) setNext(target string, at time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.nextCheck[target] = at
+}
+
+func (s *Scheduler) setLast(target string, at time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.lastCheck[target] = at
 }
 
 func (s *Scheduler) Run(ctx context.Context) {
@@ -85,6 +111,7 @@ func (s *Scheduler) Run(ctx context.Context) {
 
 func (s *Scheduler) watch(ctx context.Context, t *config.Target) {
 	delay := time.Duration(rand.Int64N(int64(startupJitter)))
+	s.setNext(t.Name, time.Now().Add(delay))
 	select {
 	case <-ctx.Done():
 		return
@@ -95,7 +122,9 @@ func (s *Scheduler) watch(ctx context.Context, t *config.Target) {
 	defer ticker.Stop()
 
 	for {
+		s.setLast(t.Name, time.Now())
 		s.tick(ctx, t)
+		s.setNext(t.Name, time.Now().Add(t.CheckInterval))
 		select {
 		case <-ctx.Done():
 			return

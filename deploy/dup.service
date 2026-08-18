@@ -12,6 +12,8 @@ Group=dup
 ExecStart=/usr/bin/dup serve --config /etc/dup/config.yml
 # ProtectSystem=strict makes the whole filesystem read-only, so the update-check
 # cache has nowhere to live without this.
+LogsDirectory=dup
+LogsDirectoryMode=0750
 StateDirectory=dup
 StateDirectoryMode=0755
 Restart=always

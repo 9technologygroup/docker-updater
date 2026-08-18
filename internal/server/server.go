@@ -38,6 +38,7 @@ type Server struct {
 
 	updateStatus func() (selfupdate.Status, bool)
 	pending      func(target string) (time.Time, []string, bool)
+	timing       func(target string) (last, next time.Time)
 }
 
 // WithBuild records the commit reported by GET /v1/version.
@@ -51,6 +52,13 @@ func (s *Server) WithBuild(commit string) *Server {
 // GitHub on demand.
 func (s *Server) WithUpdateStatus(fn func() (selfupdate.Status, bool)) *Server {
 	s.updateStatus = fn
+	return s
+}
+
+// WithTiming supplies when a target was last checked for a new image and when it
+// will be checked next.
+func (s *Server) WithTiming(fn func(target string) (last, next time.Time)) *Server {
+	s.timing = fn
 	return s
 }
 
@@ -145,6 +153,9 @@ func (s *Server) handleListTargets(w http.ResponseWriter, _ *http.Request, _ req
 		PendingSince   *time.Time `json:"pending_since,omitempty"`
 		PendingApplies *time.Time `json:"pending_applies_at,omitempty"`
 		PendingChanged []string   `json:"pending_changed,omitempty"`
+		AutoUpdate     bool       `json:"auto_update"`
+		LastCheckedAt  *time.Time `json:"last_checked_at,omitempty"`
+		NextCheckAt    *time.Time `json:"next_check_at,omitempty"`
 	}
 
 	views := make([]targetView, 0, len(s.cfg.Targets))
@@ -161,6 +172,17 @@ func (s *Server) handleListTargets(w http.ResponseWriter, _ *http.Request, _ req
 			v.Busy = true
 			v.RunningJob = running.ID()
 		}
+		v.AutoUpdate = t.AutoUpdate
+		if s.timing != nil {
+			if last, next := s.timing(t.Name); !last.IsZero() || !next.IsZero() {
+				if !last.IsZero() {
+					v.LastCheckedAt = &last
+				}
+				if !next.IsZero() {
+					v.NextCheckAt = &next
+				}
+			}
+		}
 		if s.pending != nil {
 			if since, changed, ok := s.pending(t.Name); ok {
 				applies := since.Add(t.SoakWindow())
@@ -171,7 +193,9 @@ func (s *Server) handleListTargets(w http.ResponseWriter, _ *http.Request, _ req
 		}
 		views = append(views, v)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"targets": views})
+	// The scheduler's clock is the one that decides when anything happens, so it
+	// is reported rather than left for the caller to assume.
+	writeJSON(w, http.StatusOK, map[string]any{"targets": views, "now": time.Now()})
 }
 
 func (s *Server) handleTargetStatus(w http.ResponseWriter, r *http.Request, _ requestContext) {

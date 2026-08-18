@@ -12,6 +12,12 @@ type Notifier interface {
 	Notify(ctx context.Context, snap Snapshot)
 }
 
+// Recorder persists a finished job. The in-memory store is bounded and dies with
+// the process, so this is what makes history survive a restart.
+type Recorder interface {
+	Append(snap Snapshot) error
+}
+
 type Backend interface {
 	Update(ctx context.Context, t *config.Target, req Request, sink Sink) (State, string, error)
 }
@@ -20,7 +26,13 @@ type Manager struct {
 	store    *Store
 	backend  Backend
 	notifier Notifier
+	recorder Recorder
 	log      *slog.Logger
+}
+
+func (m *Manager) WithRecorder(r Recorder) *Manager {
+	m.recorder = r
+	return m
 }
 
 func NewManager(backend Backend, store *Store, notifier Notifier, log *slog.Logger) *Manager {
@@ -58,6 +70,12 @@ func (m *Manager) run(t *config.Target, j *Job, req Request) {
 		"job", snap.ID, "target", snap.Target, "state", string(snap.State),
 		"trigger", snap.Trigger, "changed", snap.Changed,
 		"duration_ms", snap.DurationMS, "message", snap.Message)
+
+	if m.recorder != nil {
+		if err := m.recorder.Append(snap); err != nil {
+			m.log.Warn("could not record job history", "job", snap.ID, "error", err)
+		}
+	}
 
 	if m.notifier != nil {
 		notifyCtx, notifyCancel := context.WithTimeout(context.Background(), time.Minute)

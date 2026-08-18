@@ -5,13 +5,16 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
 	"os/user"
+	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -19,6 +22,7 @@ import (
 	"github.com/9technologygroup/docker-updater/internal/compose"
 	"github.com/9technologygroup/docker-updater/internal/config"
 	"github.com/9technologygroup/docker-updater/internal/pipeline"
+	"github.com/9technologygroup/docker-updater/internal/rotate"
 	"github.com/9technologygroup/docker-updater/internal/version"
 )
 
@@ -57,7 +61,8 @@ func run() error {
 		return err
 	}
 
-	log := newLogger(cfg.LogLevel)
+	log, closeLog := newAgentLogger(cfg)
+	defer closeLog()
 	docker := compose.New("docker")
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -137,10 +142,47 @@ func lookupUID(name string) (uint32, error) {
 	return uint32(uid), nil
 }
 
-func newLogger(level string) *slog.Logger {
+// newAgentLogger mirrors the API service: stdout for the journal, plus a
+// rotating file when one is configured. The agent writes to its own file so the
+// two units never contend for the same handle.
+func newAgentLogger(cfg *config.Config) (*slog.Logger, func()) {
 	var lvl slog.Level
-	if err := lvl.UnmarshalText([]byte(level)); err != nil {
+	if err := lvl.UnmarshalText([]byte(cfg.LogLevel)); err != nil {
 		lvl = slog.LevelInfo
 	}
-	return slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: lvl}))
+	opts := &slog.HandlerOptions{Level: lvl}
+
+	if cfg.LogFile == "" {
+		return slog.New(slog.NewJSONHandler(os.Stdout, opts)), func() {}
+	}
+
+	path := agentLogPath(cfg.LogFile)
+	w, err := rotate.Open(rotate.Config{
+		Path:     path,
+		MaxBytes: int64(cfg.LogMaxSizeMB) << 20,
+		Keep:     cfg.LogKeep,
+		Mode:     0o640,
+	})
+	if err != nil {
+		log := slog.New(slog.NewJSONHandler(os.Stdout, opts))
+		log.Warn("logging to file is disabled, the journal still has everything",
+			"path", path, "error", err)
+		return log, func() {}
+	}
+	log := slog.New(slog.NewJSONHandler(io.MultiWriter(os.Stdout, w), opts))
+	log.Info("logging to file", "path", path)
+	return log, func() { _ = w.Close() }
+}
+
+// agentLogPath keeps the root agent's log in its own directory. Sharing one with
+// the API service would mean the unprivileged account could rewrite or delete the
+// root process's record of what it ran, and that record is the thing you reach
+// for when something has gone wrong.
+func agentLogPath(logFile string) string {
+	dir, name := filepath.Split(strings.TrimRight(logFile, "/"))
+	ext := filepath.Ext(name)
+	if ext == "" {
+		ext = ".log"
+	}
+	return filepath.Join(strings.TrimRight(dir, "/")+"-agent", "dup-agent"+ext)
 }

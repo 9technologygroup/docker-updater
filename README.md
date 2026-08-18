@@ -608,7 +608,57 @@ systemctl status dup dup-agent
 journalctl -u dup -u dup-agent -f
 ```
 
-Logs are JSON on stdout, captured by journald. Job history is in memory only (last 200); journald is the durable record.
+### Where the record lives
+
+| What | Where | Retention |
+|---|---|---|
+| Service logs | journald, plus `/var/log/dup/dup.log` | dup rotates and gzips its file: `log_max_size_mb` (10) x `log_keep` (5) |
+| Agent logs | journald, plus `/var/log/dup-agent/dup-agent.log` | same settings |
+| Finished updates | `/var/lib/dup/history.jsonl` | `history_max_size_mb` (8) x `history_keep` (4) |
+| Running and recent jobs | memory, last 200 | lost on restart, which is what the history file is for |
+
+The agent logs to its own directory on purpose. Sharing one with the API service would
+let the unprivileged account rewrite or delete the root process's record of what it ran,
+and that record is what you reach for when something has gone wrong.
+
+Set `log_file: none` or `history_file: none` to turn either file off. The journal always
+gets everything regardless:
+
+```bash
+journalctl -u dup -u dup-agent -f
+```
+
+### Seeing what is going on
+
+```bash
+dup list          # policy, when each stack is next checked, and anything mid-flight
+dup status        # running jobs and recent outcomes, from memory
+dup logs          # every finished update, from disk, so it survives a restart
+dup logs app      # just that stack
+dup logs --job <id>   # one job with every step and its output
+dup logs --full   # every step of each job in the list
+```
+
+`dup list` leads with the server's own clock, because a countdown is not actionable
+without knowing what time the scheduler thinks it is:
+
+```
+dup 1.0.0  4 stacks configured, 2 on auto update
+api https://127.0.0.1:7788   inbound token, github   outbound none
+server time Tue 18 Aug 2026 18:26:48 BST
+
+STACK  AUTO  EVERY  NEXT  SOAK  ROLLBACK  SERVICES  DIR
+app    yes   6h     2h14m 30m   yes       all       /opt/app
+db     no    -      -     -     yes       all       /opt/db
+
+In flight
+  app   update waiting out its soak   applies 18:36:48 (in 10m)   new image for web
+```
+
+`NEXT` is when that stack is next checked against its registry. The first check after a
+start is jittered by up to 90 seconds so a host with many stacks does not hit its registry
+all at once, and the ticker keeps that offset, which is why the value is reported rather
+than calculated from `check_interval`.
 
 On `SIGTERM` each process stops accepting new work and waits for anything in flight, 30 seconds for the API and 90 for the agent.
 
