@@ -69,8 +69,15 @@ func runServe(args []string) error {
 
 	client := agent.NewClient(cfg.AgentSocket)
 	pingCtx, pingCancel := context.WithTimeout(ctx, 10*time.Second)
-	if err := client.Ping(pingCtx); err != nil {
+	if health, err := client.Health(pingCtx); err != nil {
 		log.Warn("update agent is not reachable yet, updates will fail until it is", "error", err)
+	} else if health.ConfigFingerprint != "" && health.ConfigFingerprint != cfg.Fingerprint() {
+		// Restarting only this service after editing the config is the easy
+		// mistake, and the symptom is an "unknown target" from the agent later.
+		log.Warn("the update agent is running a different config, so updates will fail for anything it has not loaded",
+			"on_disk", cfg.Fingerprint(), "agent_loaded", health.ConfigFingerprint,
+			"agent_targets", health.Targets,
+			"fix", "sudo systemctl restart dup-agent dup")
 	}
 	pingCancel()
 
