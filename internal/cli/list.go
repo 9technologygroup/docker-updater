@@ -28,14 +28,14 @@ func runList(args []string) error {
 
 	printHeader(cfg)
 	printTargets(cfg)
+	printMissingDirs(cfg, *configPath)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	result, err := agent.NewClient(cfg.AgentSocket).Discover(ctx)
 	if err != nil {
-		fmt.Printf("\nCoverage unknown: %s\n", err)
-		fmt.Printf("Run this as root, or as a member of the %s group, with the agent running.\n", cfg.AgentPeerUser)
+		fmt.Printf("\nCoverage unknown.\n\n%s\n", agentUnreachable(cfg.AgentSocket, err))
 		return nil
 	}
 	printCoverage(result, *all)
@@ -75,6 +75,27 @@ func printTargets(cfg *config.Config) {
 			t.Name, auto, every, soak, rollback, joinOr(t.Services, "all"), t.Dir)
 	}
 	_ = w.Flush()
+}
+
+func printMissingDirs(cfg *config.Config, configPath string) {
+	var missing []*config.Target
+	for _, t := range cfg.Targets {
+		if info, err := os.Stat(t.Dir); err != nil || !info.IsDir() {
+			missing = append(missing, t)
+		}
+	}
+	if len(missing) == 0 {
+		return
+	}
+
+	fmt.Printf("\n%d %s point at a directory that does not exist:\n",
+		len(missing), plural(len(missing), "stack", "stacks"))
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	for _, t := range missing {
+		_, _ = fmt.Fprintf(w, "  %s\t%s\n", t.Name, t.Dir)
+	}
+	_ = w.Flush()
+	fmt.Printf("\nEdit %s so the stacks match this host, then run: sudo dup check\n", configPath)
 }
 
 func printCoverage(result wire.DiscoverResult, all bool) {

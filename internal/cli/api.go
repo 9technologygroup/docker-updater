@@ -53,7 +53,7 @@ func (c *apiClient) do(ctx context.Context, method, path, body string, out any) 
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return fmt.Errorf("could not reach the dup API on %s: %w", c.base, err)
+		return apiUnreachable(c.base, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
