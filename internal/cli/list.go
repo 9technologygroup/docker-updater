@@ -22,6 +22,14 @@ type targetView struct {
 	PendingSince   *time.Time `json:"pending_since,omitempty"`
 	PendingApplies *time.Time `json:"pending_applies_at,omitempty"`
 	PendingChanged []string   `json:"pending_changed,omitempty"`
+	AutoUpdate     bool       `json:"auto_update"`
+	LastCheckedAt  *time.Time `json:"last_checked_at,omitempty"`
+	NextCheckAt    *time.Time `json:"next_check_at,omitempty"`
+}
+
+type targetsResponse struct {
+	Targets []targetView `json:"targets"`
+	Now     time.Time    `json:"now"`
 }
 
 func runList(args []string) error {
@@ -36,10 +44,13 @@ func runList(args []string) error {
 		return err
 	}
 
-	printHeader(cfg)
-	printTargets(cfg)
+	resp, _ := fetchTargets(cfg)
+	views := resp.Targets
+
+	printHeader(cfg, resp.Now)
+	printTargets(cfg, views)
 	printWarnings(cfg)
-	printActivity(cfg)
+	printActivity(views)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -53,7 +64,7 @@ func runList(args []string) error {
 	return nil
 }
 
-func printHeader(cfg *config.Config) {
+func printHeader(cfg *config.Config, now time.Time) {
 	auto := len(cfg.AutoUpdateTargets())
 	if len(cfg.Targets) == 0 {
 		fmt.Printf("dup %s  no stacks configured\n", version.Short())
@@ -66,44 +77,74 @@ func printHeader(cfg *config.Config) {
 	if outbound == "" {
 		outbound = "none"
 	}
-	fmt.Printf("api %s   inbound %s   outbound %s\n\n",
+	fmt.Printf("api %s   inbound %s   outbound %s\n",
 		apiURL(cfg), joinOr(cfg.InboundMethods(), "none"), outbound)
+	if now.IsZero() {
+		fmt.Printf("server time unknown, the API is not reachable\n\n")
+	} else {
+		fmt.Printf("server time %s\n\n", now.Local().Format("Mon 02 Jan 2006 15:04:05 MST"))
+	}
 }
 
-func printTargets(cfg *config.Config) {
+func printTargets(cfg *config.Config, views []targetView) {
 	if len(cfg.Targets) == 0 {
 		fmt.Printf("No stacks configured yet. Everything below is a candidate.\n")
 		return
 	}
-	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	_, _ = fmt.Fprintln(w, "STACK\tAUTO\tEVERY\tSOAK\tROLLBACK\tSERVICES\tDIR")
+	byName := make(map[string]targetView, len(views))
+	for _, v := range views {
+		byName[v.Name] = v
+	}
 
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	// No AUTO column: a dash under CHECK already says this stack only updates
+	// when asked, and the dashes were most of the table's width.
+	_, _ = fmt.Fprintln(w, "STACK\tCHECK\tNEXT\tSOAK\tRB\tSERVICES\tDIR")
+
+	manual := 0
 	for _, t := range cfg.Targets {
-		every, soak := "-", "-"
-		auto := "no"
+		every, soak, next := "-", "-", "-"
 		if t.AutoUpdate {
-			auto = "yes"
 			every = short(t.CheckInterval)
 			soak = short(t.SoakWindow())
+			next = nextCheckIn(byName[t.Name].NextCheckAt)
+		} else {
+			manual++
 		}
-		rollback := "no"
+		rollback := "off"
 		if t.RollbackEnabled() {
-			rollback = "yes"
+			rollback = "on"
 		}
 		_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-			t.Name, auto, every, soak, rollback, joinOr(t.Services, "all"), t.Dir)
+			t.Name, every, next, soak, rollback, joinOr(t.Services, "all"), clipPath(t.Dir, 34))
 	}
 	_ = w.Flush()
+
+	if manual > 0 {
+		fmt.Printf("\nA dash under CHECK means that stack updates only when asked.\n")
+	}
+}
+
+// clipPath keeps the tail of a path, which is the part that identifies the stack.
+// Full paths pushed the table past any sensible terminal width.
+func clipPath(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	return "..." + s[len(s)-max+3:]
+}
+
+// clip keeps the head of free text, where the useful part usually is.
+func clip(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	return s[:max-3] + "..."
 }
 
 // printActivity shows what the scheduler is holding. An update that has been
 // detected and is soaking is otherwise invisible until it applies.
-func printActivity(cfg *config.Config) {
-	views, err := fetchTargets(cfg)
-	if err != nil {
-		return
-	}
-
+func printActivity(views []targetView) {
 	var pending, running []targetView
 	for _, v := range views {
 		switch {
@@ -123,33 +164,28 @@ func printActivity(cfg *config.Config) {
 		_, _ = fmt.Fprintf(w, "  %s\tupdating now\tjob %s\n", v.Name, v.RunningJob)
 	}
 	for _, v := range pending {
-		when := "now"
-		if remaining := time.Until(*v.PendingApplies); remaining > 0 {
-			when = "in " + short(remaining.Round(time.Minute))
-		}
-		_, _ = fmt.Fprintf(w, "  %s\tupdate waiting out its soak\tapplies %s\t%s\n",
-			v.Name, when, joinOr(v.PendingChanged, "unknown services"))
+		_, _ = fmt.Fprintf(w, "  %s\tupdate waiting out its soak\tapplies %s\tnew image for %s\n",
+			v.Name, at(v.PendingApplies), joinOr(v.PendingChanged, "unknown services"))
 	}
 	_ = w.Flush()
 }
 
 // fetchTargets is best effort. dup list is useful with the API down, so a
 // failure here drops the activity section rather than the whole command.
-func fetchTargets(cfg *config.Config) ([]targetView, error) {
+func fetchTargets(cfg *config.Config) (targetsResponse, error) {
+	var out targetsResponse
+
 	client, err := newAPIClient(cfg)
 	if err != nil {
-		return nil, err
+		return out, err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	var out struct {
-		Targets []targetView `json:"targets"`
-	}
 	if err := client.do(ctx, http.MethodGet, "/v1/targets", "", &out); err != nil {
-		return nil, err
+		return out, err
 	}
-	return out.Targets, nil
+	return out, nil
 }
 
 func printCoverage(result wire.DiscoverResult, all bool) {

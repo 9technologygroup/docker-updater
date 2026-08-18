@@ -5,7 +5,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"log/slog"
 	"os"
 	"strings"
 
@@ -37,8 +36,10 @@ func commands() []command {
 		{"cert", groupSetup, "generate the self-signed TLS certificate (root)", runCert},
 
 		{"list", groupDaily, "show configured stacks, their update policy, and what dup is not covering", runList},
-		{"status", groupDaily, "show recent update jobs for one stack or all of them", runStatus},
-		{"update", groupDaily, "trigger an update for one stack", runUpdate},
+		{"status", groupDaily, "show what is happening now, and the next scheduled check", runStatus},
+		{"logs", groupDaily, "show the durable history of finished updates, newest first", runLogs},
+		{"scan", groupDaily, "check every stack against its registry now, without updating", runScan},
+		{"update", groupDaily, "trigger an update for one stack, --force to recreate regardless", runUpdate},
 		{"version", groupDaily, "print the version and check for a newer release", runVersion},
 
 		{"serve", groupUnit, "run the unprivileged HTTP API", runServe},
@@ -183,14 +184,6 @@ func noArgs(fs *flag.FlagSet, args []string, name string) error {
 		return fmt.Errorf("dup %s takes no arguments, got %q", name, positional[0])
 	}
 	return nil
-}
-
-func newLogger(level string) *slog.Logger {
-	var lvl slog.Level
-	if err := lvl.UnmarshalText([]byte(level)); err != nil {
-		lvl = slog.LevelInfo
-	}
-	return slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: lvl}))
 }
 
 func apiURL(cfg *config.Config) string {

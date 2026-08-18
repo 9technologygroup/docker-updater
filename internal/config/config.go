@@ -24,6 +24,8 @@ const (
 	DefaultAgentSocket = "/run/dup/agent.sock"
 	DefaultCertFile    = "/etc/dup/self-signed.crt"
 	DefaultKeyFile     = "/etc/dup/self-signed.key"
+	DefaultLogFile     = "/var/log/dup/dup.log"
+	DefaultHistoryFile = "/var/lib/dup/history.jsonl"
 	MinSecretLen       = 32
 	MaxBodyBytes       = 1 << 20
 	MaxSocketPathLen   = 100
@@ -47,6 +49,12 @@ type Config struct {
 	AgentSocket      string    `yaml:"agent_socket"`
 	AgentPeerUser    string    `yaml:"agent_peer_user"`
 	LogLevel         string    `yaml:"log_level"`
+	LogFile          string    `yaml:"log_file"`
+	LogMaxSizeMB     int       `yaml:"log_max_size_mb"`
+	LogKeep          int       `yaml:"log_keep"`
+	HistoryFile      string    `yaml:"history_file"`
+	HistoryMaxSizeMB int       `yaml:"history_max_size_mb"`
+	HistoryKeep      int       `yaml:"history_keep"`
 	Auth             Auth      `yaml:"auth"`
 	Defaults         Defaults  `yaml:"defaults"`
 	Notify           Notify    `yaml:"notify"`
@@ -279,6 +287,41 @@ func (c *Config) applyDefaults() error {
 	}
 	if c.LogLevel == "" {
 		c.LogLevel = "info"
+	}
+	if c.LogFile == "" {
+		c.LogFile = DefaultLogFile
+	}
+	if c.HistoryFile == "" {
+		c.HistoryFile = DefaultHistoryFile
+	}
+	// "none" turns a file off without leaving the key looking unset.
+	if c.LogFile == "none" {
+		c.LogFile = ""
+	}
+	if c.HistoryFile == "none" {
+		c.HistoryFile = ""
+	}
+	for _, f := range []struct {
+		name, path string
+	}{{"log_file", c.LogFile}, {"history_file", c.HistoryFile}} {
+		if f.path != "" && !filepath.IsAbs(f.path) {
+			return fmt.Errorf("%s must be an absolute path, or \"none\" to disable", f.name)
+		}
+	}
+	if c.LogMaxSizeMB <= 0 {
+		c.LogMaxSizeMB = 10
+	}
+	if c.LogKeep < 0 {
+		c.LogKeep = 0
+	}
+	if c.LogKeep == 0 {
+		c.LogKeep = 5
+	}
+	if c.HistoryMaxSizeMB <= 0 {
+		c.HistoryMaxSizeMB = 8
+	}
+	if c.HistoryKeep <= 0 {
+		c.HistoryKeep = 4
 	}
 	if c.Defaults.PullTimeout <= 0 {
 		c.Defaults.PullTimeout = 10 * time.Minute

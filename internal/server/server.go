@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -14,6 +15,7 @@ import (
 	"github.com/9technologygroup/docker-updater/internal/config"
 	"github.com/9technologygroup/docker-updater/internal/job"
 	"github.com/9technologygroup/docker-updater/internal/selfupdate"
+	"github.com/9technologygroup/docker-updater/internal/wire"
 )
 
 const (
@@ -38,6 +40,8 @@ type Server struct {
 
 	updateStatus func() (selfupdate.Status, bool)
 	pending      func(target string) (time.Time, []string, bool)
+	timing       func(target string) (last, next time.Time)
+	checkNow     func(ctx context.Context, target string) (wire.CheckResult, error)
 }
 
 // WithBuild records the commit reported by GET /v1/version.
@@ -51,6 +55,20 @@ func (s *Server) WithBuild(commit string) *Server {
 // GitHub on demand.
 func (s *Server) WithUpdateStatus(fn func() (selfupdate.Status, bool)) *Server {
 	s.updateStatus = fn
+	return s
+}
+
+// WithChecker lets a caller ask for a registry check now rather than waiting for
+// the schedule. The scheduler was the only thing that could trigger one.
+func (s *Server) WithChecker(fn func(ctx context.Context, target string) (wire.CheckResult, error)) *Server {
+	s.checkNow = fn
+	return s
+}
+
+// WithTiming supplies when a target was last checked for a new image and when it
+// will be checked next.
+func (s *Server) WithTiming(fn func(target string) (last, next time.Time)) *Server {
+	s.timing = fn
 	return s
 }
 
@@ -70,6 +88,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 	mux.Handle("GET /v1/targets", s.protected(s.handleListTargets))
 	mux.Handle("POST /v1/targets/{target}/update", s.protected(s.handleUpdate))
+	mux.Handle("POST /v1/targets/{target}/check", s.protected(s.handleCheckNow))
 	mux.Handle("GET /v1/targets/{target}/status", s.protected(s.handleTargetStatus))
 	mux.Handle("GET /v1/jobs", s.protected(s.handleListJobs))
 	mux.Handle("GET /v1/version", s.protected(s.handleVersion))
@@ -112,6 +131,31 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
+// handleCheckNow pulls and compares without changing anything that is running.
+func (s *Server) handleCheckNow(w http.ResponseWriter, r *http.Request, _ requestContext) {
+	name := r.PathValue("target")
+	if _, ok := s.cfg.Target(name); !ok {
+		writeError(w, http.StatusNotFound, "unknown target")
+		return
+	}
+	if s.checkNow == nil {
+		writeError(w, http.StatusNotImplemented, "this build cannot check for updates")
+		return
+	}
+
+	result, err := s.checkNow(r.Context(), name)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"target":    name,
+		"available": result.Available,
+		"changed":   result.Changed,
+		"message":   result.Message,
+	})
+}
+
 func (s *Server) handleVersion(w http.ResponseWriter, _ *http.Request, _ requestContext) {
 	out := map[string]any{"current": s.version}
 	if s.commit != "" {
@@ -145,6 +189,9 @@ func (s *Server) handleListTargets(w http.ResponseWriter, _ *http.Request, _ req
 		PendingSince   *time.Time `json:"pending_since,omitempty"`
 		PendingApplies *time.Time `json:"pending_applies_at,omitempty"`
 		PendingChanged []string   `json:"pending_changed,omitempty"`
+		AutoUpdate     bool       `json:"auto_update"`
+		LastCheckedAt  *time.Time `json:"last_checked_at,omitempty"`
+		NextCheckAt    *time.Time `json:"next_check_at,omitempty"`
 	}
 
 	views := make([]targetView, 0, len(s.cfg.Targets))
@@ -161,6 +208,17 @@ func (s *Server) handleListTargets(w http.ResponseWriter, _ *http.Request, _ req
 			v.Busy = true
 			v.RunningJob = running.ID()
 		}
+		v.AutoUpdate = t.AutoUpdate
+		if s.timing != nil {
+			if last, next := s.timing(t.Name); !last.IsZero() || !next.IsZero() {
+				if !last.IsZero() {
+					v.LastCheckedAt = &last
+				}
+				if !next.IsZero() {
+					v.NextCheckAt = &next
+				}
+			}
+		}
 		if s.pending != nil {
 			if since, changed, ok := s.pending(t.Name); ok {
 				applies := since.Add(t.SoakWindow())
@@ -171,7 +229,9 @@ func (s *Server) handleListTargets(w http.ResponseWriter, _ *http.Request, _ req
 		}
 		views = append(views, v)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"targets": views})
+	// The scheduler's clock is the one that decides when anything happens, so it
+	// is reported rather than left for the caller to assume.
+	writeJSON(w, http.StatusOK, map[string]any{"targets": views, "now": time.Now()})
 }
 
 func (s *Server) handleTargetStatus(w http.ResponseWriter, r *http.Request, _ requestContext) {

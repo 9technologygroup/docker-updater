@@ -24,6 +24,11 @@ The caller names a **stack**, never a path and never a command. Everything else 
 
 Requires Linux, systemd and Docker Compose v2.
 
+Not macOS. Both binaries compile and run there, which is useful for development, but there
+are no darwin release builds, `install.sh` refuses without systemd, and the agent's
+peer-credential check has no implementation outside Linux, so socket permissions become the
+only control over who can drive the root agent. It warns about exactly that at startup.
+
 ## Install
 
 ```sh
@@ -176,7 +181,9 @@ itself is removed.
 | Command | What it does |
 |---|---|
 | `dup list` | Stacks, their update policy, and every compose project or container on the host that dup is **not** covering |
-| `dup status [stack]` | Recent update jobs, newest first |
+| `dup status [stack]` | What is running now, plus recent outcomes from memory |
+| `dup logs [stack]` | Finished updates from disk, so they survive a restart. `--job <id>`, `--full`, `--limit` |
+| `dup scan [stack]` | Check every stack against its registry now, without updating anything |
 | `dup update <stack>` | Trigger an update. `--tag`, `--dry-run`, `--force`, `--reason`, `--wait`. `--dry-run` pulls and reports what would change without recreating anything |
 | `dup check` | Validate the config |
 | `dup audit` | Verify the service account cannot rewrite what runs as root |
@@ -459,6 +466,7 @@ All endpoints except `/healthz` need auth.
 | GET | `/healthz` | Liveness. No auth, no detail. |
 | GET | `/v1/targets` | Configured stacks and whether each is busy |
 | POST | `/v1/targets/{stack}/update` | Start an update |
+| POST | `/v1/targets/{stack}/check` | Check for a new image now. Pulls and compares, changes nothing |
 | GET | `/v1/targets/{stack}/status` | Running job plus recent history for one stack |
 | GET | `/v1/jobs?target=&limit=` | Recent jobs |
 | GET | `/v1/jobs/{id}` | One job with its full step log |
@@ -608,7 +616,75 @@ systemctl status dup dup-agent
 journalctl -u dup -u dup-agent -f
 ```
 
-Logs are JSON on stdout, captured by journald. Job history is in memory only (last 200); journald is the durable record.
+### Where the record lives
+
+| What | Where | Retention |
+|---|---|---|
+| Service logs | journald, plus `/var/log/dup/dup.log` | dup rotates and gzips its file: `log_max_size_mb` (10) x `log_keep` (5) |
+| Agent logs | journald, plus `/var/log/dup-agent/dup-agent.log` | same settings |
+| Finished updates | `/var/lib/dup/history.jsonl` | `history_max_size_mb` (8) x `history_keep` (4) |
+| Running and recent jobs | memory, last 200 | lost on restart, which is what the history file is for |
+
+The agent logs to its own directory on purpose. Sharing one with the API service would
+let the unprivileged account rewrite or delete the root process's record of what it ran,
+and that record is what you reach for when something has gone wrong.
+
+Set `log_file: none` or `history_file: none` to turn either file off. The journal always
+gets everything regardless:
+
+```bash
+journalctl -u dup -u dup-agent -f
+```
+
+### Forcing things
+
+```bash
+dup scan                       # check every stack against its registry now
+dup scan app                   # just one
+dup update app                 # update if there is something new
+dup update app --force         # recreate even when the images have not changed
+dup update app --dry-run       # pull, report what would change, recreate nothing
+```
+
+`dup scan` answers "is there anything waiting" without touching what is running. It pulls
+images in order to compare them, so it is not free and can take a while on a slow link. It
+does not shortcut a soak: an auto-update stack still waits out its window.
+
+`--force` is the one to reach for when a container is misbehaving and you want it recreated
+from the image it is already on. Without it, an update with nothing new to pull and a
+healthy stack finishes as `no_change` and leaves everything alone.
+
+### Seeing what is going on
+
+```bash
+dup list          # policy, when each stack is next checked, and anything mid-flight
+dup status        # running jobs and recent outcomes, from memory
+dup logs          # every finished update, from disk, so it survives a restart
+dup logs app      # just that stack
+dup logs --job <id>   # one job with every step and its output
+dup logs --full   # every step of each job in the list
+```
+
+`dup list` leads with the server's own clock, because a countdown is not actionable
+without knowing what time the scheduler thinks it is:
+
+```
+dup 1.0.0  4 stacks configured, 2 on auto update
+api https://127.0.0.1:7788   inbound token, github   outbound none
+server time Tue 18 Aug 2026 18:26:48 BST
+
+STACK  AUTO  EVERY  NEXT  SOAK  ROLLBACK  SERVICES  DIR
+app    yes   6h     2h14m 30m   yes       all       /opt/app
+db     no    -      -     -     yes       all       /opt/db
+
+In flight
+  app   update waiting out its soak   applies 18:36:48 (in 10m)   new image for web
+```
+
+`NEXT` is when that stack is next checked against its registry. The first check after a
+start is jittered by up to 90 seconds so a host with many stacks does not hit its registry
+all at once, and the ticker keeps that offset, which is why the value is reported rather
+than calculated from `check_interval`.
 
 On `SIGTERM` each process stops accepting new work and waits for anything in flight, 30 seconds for the API and 90 for the agent.
 

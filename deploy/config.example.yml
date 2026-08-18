@@ -4,6 +4,19 @@ log_level: info
 agent_socket: /run/dup/agent.sock
 agent_peer_user: dup
 
+# Everything dup logs goes to the journal regardless: journalctl -u dup -u dup-agent
+# These write a copy to a file that dup rotates and gzips itself. Set either to
+# "none" to turn that file off.
+log_file: /var/log/dup/dup.log          # the agent writes dup-agent.log beside it
+log_max_size_mb: 10
+log_keep: 5
+
+# One JSON line per finished update, so "dup logs" survives a restart. The
+# in-memory view behind "dup status" does not.
+history_file: /var/lib/dup/history.jsonl
+history_max_size_mb: 8
+history_keep: 4
+
 # HTTPS is on by default. The installer generates the pair below before you get
 # here, so copying this file is all it takes.
 #

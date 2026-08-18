@@ -18,12 +18,14 @@ import (
 	"github.com/9technologygroup/docker-updater/internal/audit"
 	"github.com/9technologygroup/docker-updater/internal/certs"
 	"github.com/9technologygroup/docker-updater/internal/config"
+	"github.com/9technologygroup/docker-updater/internal/history"
 	"github.com/9technologygroup/docker-updater/internal/job"
 	"github.com/9technologygroup/docker-updater/internal/notify"
 	"github.com/9technologygroup/docker-updater/internal/schedule"
 	"github.com/9technologygroup/docker-updater/internal/selfupdate"
 	"github.com/9technologygroup/docker-updater/internal/server"
 	"github.com/9technologygroup/docker-updater/internal/version"
+	"github.com/9technologygroup/docker-updater/internal/wire"
 )
 
 const (
@@ -42,7 +44,8 @@ func runServe(args []string) error {
 		return err
 	}
 
-	log := newLogger(cfg.LogLevel)
+	log, closeLog := newServiceLogger(cfg)
+	defer closeLog()
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
@@ -72,6 +75,10 @@ func runServe(args []string) error {
 	pingCancel()
 
 	manager := job.NewManager(client, store, n, log)
+	if hist := openHistory(cfg, log); hist != nil {
+		defer func() { _ = hist.Close() }()
+		manager = manager.WithRecorder(hist)
+	}
 	scheduler := schedule.New(cfg, client, manager, log)
 
 	checker := selfupdate.New()
@@ -81,6 +88,10 @@ func runServe(args []string) error {
 		WithPending(func(target string) (time.Time, []string, bool) {
 			p, ok := scheduler.PendingFor(target)
 			return p.Since, p.Services, ok
+		}).
+		WithTiming(scheduler.Timing).
+		WithChecker(func(ctx context.Context, target string) (wire.CheckResult, error) {
+			return client.Check(ctx, target)
 		})
 
 	go scheduler.Run(ctx)
@@ -187,6 +198,27 @@ func watchForNewRelease(ctx context.Context, checker *selfupdate.Checker, log *s
 		case <-ticker.C:
 		}
 	}
+}
+
+// openHistory is best effort. Losing the durable record is worth a warning, not
+// a refusal to run updates.
+func openHistory(cfg *config.Config, log *slog.Logger) *history.Writer {
+	if cfg.HistoryFile == "" {
+		return nil
+	}
+	w, err := history.Open(history.Config{
+		Path:     cfg.HistoryFile,
+		MaxBytes: int64(cfg.HistoryMaxSizeMB) << 20,
+		Keep:     cfg.HistoryKeep,
+	})
+	if err != nil {
+		log.Warn("job history is disabled, dup status will not survive a restart",
+			"path", cfg.HistoryFile, "error", err)
+		return nil
+	}
+	log.Info("recording job history", "path", cfg.HistoryFile,
+		"max_size_mb", cfg.HistoryMaxSizeMB, "keep", cfg.HistoryKeep)
+	return w
 }
 
 func checkListen(cfg *config.Config) error {
