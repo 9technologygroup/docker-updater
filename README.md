@@ -462,6 +462,7 @@ All endpoints except `/healthz` need auth.
 | GET | `/v1/targets/{stack}/status` | Running job plus recent history for one stack |
 | GET | `/v1/jobs?target=&limit=` | Recent jobs |
 | GET | `/v1/jobs/{id}` | One job with its full step log |
+| GET | `/v1/version` | Running version, and the newest release if a check has run. Reads a cache, never calls out |
 
 ```bash
 curl -X POST \
@@ -471,9 +472,65 @@ curl -X POST \
   "https://deploy.example.com/v1/targets/app/update?wait=240s"
 ```
 
-Body fields, all optional: `tag`, `reason`, `dry_run`, `force`.
+Body fields, all optional: `tag`, `reason`, `dry_run`, `force`. `tag` is refused unless the
+target sets `image_tag_env`.
 
 `?wait=` blocks for up to 5 minutes and returns the finished job. Without it you get `202` immediately and poll `/v1/jobs/{id}`. With `wait`, a finished job returns `200` when it went well and `500` when it did not, so an n8n error branch works without inspecting the body.
+
+### Testing it locally
+
+dup listens on loopback and serves its own TLS by default, so a local `curl` needs the
+certificate. Verification stays on; the certificate names `localhost`, `127.0.0.1`, `::1`
+and the hostname.
+
+```bash
+TOKEN=$(sudo cat /etc/dup/bearer.token)
+CA=/etc/dup/self-signed.crt
+API=https://127.0.0.1:7788
+```
+
+Drop `--cacert "$CA"` and use `http://` instead if you set `tls.enabled: false`.
+
+```bash
+curl -sS --cacert "$CA" "$API/healthz"                                    # no auth
+curl -sS --cacert "$CA" -H "Authorization: Bearer $TOKEN" "$API/v1/targets"
+curl -sS --cacert "$CA" -H "Authorization: Bearer $TOKEN" "$API/v1/targets/app/status"
+curl -sS --cacert "$CA" -H "Authorization: Bearer $TOKEN" "$API/v1/jobs?limit=5"
+```
+
+A dry run, which pulls and reports what would change without recreating anything:
+
+```bash
+curl -sS --cacert "$CA" -X POST \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"dry_run":true,"reason":"local test"}' \
+  "$API/v1/targets/app/update?wait=240s"
+```
+
+To exercise the GitHub path you have to sign the body, because dup verifies the HMAC over
+the exact bytes:
+
+```bash
+SECRET=$(sudo cat /etc/dup/github.secret)
+BODY='{"action":"published","release":{"tag_name":"v1.2.3"},"repository":{"full_name":"you/app"}}'
+SIG="sha256=$(printf '%s' "$BODY" | openssl dgst -sha256 -hmac "$SECRET" -r | cut -d' ' -f1)"
+
+curl -sS --cacert "$CA" -X POST \
+  -H "X-Hub-Signature-256: $SIG" -H "X-GitHub-Event: release" \
+  -H 'Content-Type: application/json' -d "$BODY" \
+  "$API/v1/targets/app/update"
+```
+
+Change one byte of `BODY` without re-signing and you get `401`, which is the check working.
+`X-GitHub-Event: ping` returns `{"status":"ignored","reason":"ping event"}`, which is the
+cheapest way to confirm the secret is right without triggering a deploy.
+
+Easier still, the CLI does the TLS and the auth for you:
+
+```bash
+sudo dup status app
+sudo dup update app --dry-run
+```
 
 ### Response states
 
