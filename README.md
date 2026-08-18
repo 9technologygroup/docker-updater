@@ -57,24 +57,36 @@ sudo ./install.sh
 
 Both binaries go to `/usr/bin`, the same place the packages put them.
 
-The installer deliberately does **not** create `/etc/dup/config.yml` or start anything. It drops a reference config next to it and tells you what to do. Point it at your stacks, in this order:
+The installer writes a starter `/etc/dup/config.yml` with **no stacks in it** and starts
+both services. That is deliberate: dup comes up managing nothing, which is what lets it
+show you the host before you have decided anything.
 
 ```sh
-sudo cp /etc/dup/config.example.yml /etc/dup/config.yml
-sudo chown root:dup /etc/dup/config.yml && sudo chmod 0640 /etc/dup/config.yml
+sudo dup list
+```
+
+That lists every compose project and loose container dup is not covering, which is the
+list you pick from. Add the ones you want under `targets:` in the config, which ships with
+a fully commented example showing every field and whether it is required, then:
+
+```sh
 sudo nano /etc/dup/config.yml   # or vim, or whatever you use
 
 sudo dup check     # the config parses and matches this host
 sudo dup audit     # the dup account cannot rewrite what runs as root
-sudo systemctl enable --now dup-agent dup
+sudo systemctl restart dup-agent dup
 ```
+
+Run `dup audit` properly once you have real stacks listed. With an empty config it passes
+without proving anything, because there is nothing yet for the service account to be able
+to rewrite. `dup-agent.service` runs both `check` and `audit` as `ExecStartPre`, so from
+then on they gate every start.
 
 Then check on it:
 
 ```sh
 systemctl status dup-agent dup
 journalctl -u dup -u dup-agent -f
-sudo dup list
 sudo dup status
 ```
 

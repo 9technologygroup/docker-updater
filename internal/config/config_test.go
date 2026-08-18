@@ -110,11 +110,6 @@ func TestLoadRejectsBadConfigs(t *testing.T) {
 			want: "at least 32 characters",
 		},
 		{
-			name: "no targets",
-			body: auth + "targets: []\n",
-			want: "at least one target",
-		},
-		{
 			name: "unknown field",
 			body: auth + "wat: true\ntargets:\n  - name: a\n    dir: " + dir + "\n",
 			want: "field wat not found",
@@ -573,5 +568,28 @@ func TestTLSEnabledWithNothingToServe(t *testing.T) {
 
 	if _, err := LoadService(writeConfig(t, body)); err == nil {
 		t.Fatal("tls.enabled with no certificate and no self_signed was accepted")
+	}
+}
+
+// A host that has just installed dup has nothing under its control yet. It must
+// still start, so dup list can show what is on the host and worth adding.
+func TestNoTargetsIsValid(t *testing.T) {
+	for _, body := range []string{
+		"auth:\n  bearer_token: " + strings.Repeat("a", 32) + "\ntargets: []\n",
+		"auth:\n  bearer_token: " + strings.Repeat("a", 32) + "\n",
+	} {
+		cfg, err := Load(writeConfig(t, body))
+		if err != nil {
+			t.Fatalf("Load with no targets: %v", err)
+		}
+		if len(cfg.Targets) != 0 {
+			t.Errorf("got %d targets, want 0", len(cfg.Targets))
+		}
+		if len(cfg.TargetNames()) != 0 || len(cfg.AutoUpdateTargets()) != 0 {
+			t.Error("empty config reported targets")
+		}
+		if _, ok := cfg.Target("anything"); ok {
+			t.Error("lookup succeeded against an empty config")
+		}
 	}
 }
