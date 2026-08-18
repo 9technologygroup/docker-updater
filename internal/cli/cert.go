@@ -42,7 +42,7 @@ func runCert(args []string) error {
 		return err
 	}
 
-	if !cfg.TLS.Enabled() {
+	if !cfg.TLS.IsEnabled() {
 		return fmt.Errorf("TLS is not enabled in %s, so there is nothing to generate a certificate for.\n\n"+
 			"dup does not edit your config for you. Add this to %s and re-run:\n\n"+
 			"  tls:\n"+

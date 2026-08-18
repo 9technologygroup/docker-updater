@@ -103,7 +103,7 @@ func runServe(args []string) error {
 	}
 
 	scheme := "http"
-	if cfg.TLS.Enabled() {
+	if cfg.TLS.IsEnabled() {
 		scheme = "https"
 		if !certs.Exists(cfg.TLS.CertFile, cfg.TLS.KeyFile) {
 			_ = listener.Close()
@@ -121,7 +121,7 @@ func runServe(args []string) error {
 	serveErr := make(chan error, 1)
 	go func() {
 		var err error
-		if cfg.TLS.Enabled() {
+		if cfg.TLS.IsEnabled() {
 			err = httpServer.ServeTLS(listener, cfg.TLS.CertFile, cfg.TLS.KeyFile)
 		} else {
 			err = httpServer.Serve(listener)
@@ -198,7 +198,7 @@ func checkListen(cfg *config.Config) error {
 	if ip != nil && ip.IsLoopback() {
 		return nil
 	}
-	if cfg.TLS.Enabled() || cfg.AllowNonLoopback {
+	if cfg.TLS.IsEnabled() || cfg.AllowNonLoopback {
 		return nil
 	}
 	return fmt.Errorf("listen %s is off-loopback with no tls; either enable tls, or keep dup on 127.0.0.1 behind a reverse proxy, or set allow_non_loopback: true to serve plaintext on the network anyway", cfg.Listen)

@@ -373,7 +373,7 @@ func TestSelfSignedTLSDefaultsItsPaths(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !cfg.TLS.Enabled() {
+	if !cfg.TLS.IsEnabled() {
 		t.Fatal("self_signed should enable tls")
 	}
 	if cfg.TLS.CertFile != DefaultCertFile || cfg.TLS.KeyFile != DefaultKeyFile {
@@ -507,5 +507,71 @@ func TestNonDirectoryTargetDirIsStillAnError(t *testing.T) {
 	}
 	if _, err := Load(path); err == nil {
 		t.Fatal("a target dir that is a regular file was accepted")
+	}
+}
+
+func TestTLSEnabledPrecedence(t *testing.T) {
+	yes, no := true, false
+	cases := []struct {
+		name string
+		tls  TLS
+		want bool
+	}{
+		{"explicit off beats paths", TLS{Enabled: &no, CertFile: "/c", KeyFile: "/k", SelfSigned: true}, false},
+		{"explicit off beats self_signed", TLS{Enabled: &no, SelfSigned: true}, false},
+		{"explicit on", TLS{Enabled: &yes, CertFile: "/c", KeyFile: "/k"}, true},
+		{"inferred from self_signed", TLS{SelfSigned: true}, true},
+		{"inferred from cert_file", TLS{CertFile: "/c"}, true},
+		{"inferred off", TLS{}, false},
+	}
+	for _, tc := range cases {
+		if got := tc.tls.IsEnabled(); got != tc.want {
+			t.Errorf("%s: IsEnabled() = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// The reference config carries the certificate paths so they are visible, so
+// enabled: false has to switch TLS off despite them being set.
+func TestTLSDisabledWithPathsStillSet(t *testing.T) {
+	body := "auth:\n  bearer_token: " + strings.Repeat("a", 32) + "\n" +
+		"tls:\n  enabled: false\n  self_signed: true\n" +
+		"  cert_file: /etc/dup/self-signed.crt\n  key_file: /etc/dup/self-signed.key\n" +
+		"targets:\n  - name: a\n    dir: " + t.TempDir() + "\n"
+
+	cfg, err := LoadService(writeConfig(t, body))
+	if err != nil {
+		t.Fatalf("LoadService: %v", err)
+	}
+	if cfg.TLS.IsEnabled() {
+		t.Error("enabled: false did not switch TLS off")
+	}
+}
+
+// A config written before enabled: existed must behave exactly as it did.
+func TestTLSWithoutEnabledKeyIsUnchanged(t *testing.T) {
+	body := "auth:\n  bearer_token: " + strings.Repeat("a", 32) + "\n" +
+		"tls:\n  self_signed: true\n" +
+		"targets:\n  - name: a\n    dir: " + t.TempDir() + "\n"
+
+	cfg, err := LoadService(writeConfig(t, body))
+	if err != nil {
+		t.Fatalf("LoadService: %v", err)
+	}
+	if !cfg.TLS.IsEnabled() {
+		t.Error("self_signed: true alone should still enable TLS")
+	}
+	if cfg.TLS.CertFile != DefaultCertFile || cfg.TLS.KeyFile != DefaultKeyFile {
+		t.Errorf("paths = %q %q, want the defaults", cfg.TLS.CertFile, cfg.TLS.KeyFile)
+	}
+}
+
+func TestTLSEnabledWithNothingToServe(t *testing.T) {
+	body := "auth:\n  bearer_token: " + strings.Repeat("a", 32) + "\n" +
+		"tls:\n  enabled: true\n" +
+		"targets:\n  - name: a\n    dir: " + t.TempDir() + "\n"
+
+	if _, err := LoadService(writeConfig(t, body)); err == nil {
+		t.Fatal("tls.enabled with no certificate and no self_signed was accepted")
 	}
 }

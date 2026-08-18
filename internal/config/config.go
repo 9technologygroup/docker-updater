@@ -64,13 +64,23 @@ type Config struct {
 func (c *Config) Warnings() []string { return c.warnings }
 
 type TLS struct {
+	Enabled    *bool    `yaml:"enabled"`
 	CertFile   string   `yaml:"cert_file"`
 	KeyFile    string   `yaml:"key_file"`
 	SelfSigned bool     `yaml:"self_signed"`
 	Hosts      []string `yaml:"hosts"`
 }
 
-func (t TLS) Enabled() bool { return t.CertFile != "" || t.KeyFile != "" || t.SelfSigned }
+// IsEnabled reports whether dup should serve TLS. An explicit enabled: wins, so
+// the paths can stay visible in the config without cert_file alone forcing TLS
+// on. Without it the setting is inferred, which is what configs written before
+// enabled: existed rely on.
+func (t TLS) IsEnabled() bool {
+	if t.Enabled != nil {
+		return *t.Enabled
+	}
+	return t.CertFile != "" || t.KeyFile != "" || t.SelfSigned
+}
 
 type CORS struct {
 	AllowedOrigins []string `yaml:"allowed_origins"`
@@ -311,6 +321,9 @@ func (c *Config) applyDefaults() error {
 	}
 	if (c.TLS.CertFile == "") != (c.TLS.KeyFile == "") {
 		return fmt.Errorf("tls: cert_file and key_file must be set together")
+	}
+	if c.TLS.IsEnabled() && c.TLS.CertFile == "" {
+		return fmt.Errorf("tls.enabled is true but there is nothing to serve with; set self_signed: true to have dup generate a pair, or point cert_file and key_file at a certificate you manage")
 	}
 	if len(c.AgentSocket) > MaxSocketPathLen {
 		return fmt.Errorf("agent_socket path is %d bytes; the kernel limit for unix sockets is %d, pick a shorter path", len(c.AgentSocket), MaxSocketPathLen)
