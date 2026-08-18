@@ -120,11 +120,18 @@ func writableBy(path string, id *Identity) (string, bool) {
 	}
 
 	perm := info.Mode().Perm()
+
+	// On a sticky directory only the owner of an entry may replace or remove it,
+	// so group and world write bits grant nothing. /tmp is the usual example.
+	sticky := info.IsDir() && info.Mode()&os.ModeSticky != 0
+
 	switch {
-	case perm&0o002 != 0:
-		return fmt.Sprintf("world writable (mode %04o)", perm), true
 	case stat.Uid == id.UID && perm&0o200 != 0:
 		return fmt.Sprintf("owned by %s and owner writable (mode %04o)", id.Name, perm), true
+	case sticky:
+		return "", false
+	case perm&0o002 != 0:
+		return fmt.Sprintf("world writable (mode %04o)", perm), true
 	case id.GIDs[stat.Gid] && perm&0o020 != 0:
 		return fmt.Sprintf("group writable (mode %04o) by a group %s belongs to", perm, id.Name), true
 	}

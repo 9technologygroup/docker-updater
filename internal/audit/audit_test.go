@@ -196,3 +196,47 @@ func TestAuditCoversThePreUpdateHookCommand(t *testing.T) {
 	}
 	t.Error("a pre-update hook the service account can rewrite must be flagged: it runs as root")
 }
+
+func TestStickyDirectoriesAreNotTreatedAsWritable(t *testing.T) {
+	dir := t.TempDir()
+	sticky := filepath.Join(dir, "sticky")
+	if err := os.Mkdir(sticky, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(sticky, 0o777|os.ModeSticky); err != nil {
+		t.Fatal(err)
+	}
+
+	nobody := &Identity{Name: "nobody", UID: 999999, GIDs: map[uint32]bool{}}
+	if reason, bad := writableBy(sticky, nobody); bad {
+		t.Errorf("a sticky world-writable directory must not be flagged (%s); only the owner of an entry can replace it", reason)
+	}
+
+	plain := filepath.Join(dir, "plain")
+	if err := os.Mkdir(plain, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(plain, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	if _, bad := writableBy(plain, nobody); !bad {
+		t.Error("a world-writable directory without the sticky bit must still be flagged")
+	}
+}
+
+func TestStickyDoesNotExcuseAnOwnedDirectory(t *testing.T) {
+	id := currentIdentity(t)
+
+	dir := t.TempDir()
+	owned := filepath.Join(dir, "owned")
+	if err := os.Mkdir(owned, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(owned, 0o777|os.ModeSticky); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, bad := writableBy(owned, id); !bad {
+		t.Error("the owner can clear the sticky bit, so a directory the service account owns is still writable")
+	}
+}
