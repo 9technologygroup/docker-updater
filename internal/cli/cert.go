@@ -23,11 +23,20 @@ func runCert(args []string) error {
 		return err
 	}
 
-	if cfg.TLS.CertFile == "" || cfg.TLS.KeyFile == "" {
-		return fmt.Errorf("no certificate paths configured; set tls.self_signed: true, or tls.cert_file and tls.key_file")
+	if !cfg.TLS.Enabled() {
+		return fmt.Errorf("TLS is not enabled in %s, so there is nothing to generate a certificate for.\n\n"+
+			"dup does not edit your config for you. Add this to %s and re-run:\n\n"+
+			"  tls:\n"+
+			"    self_signed: true\n\n"+
+			"Then:  sudo dup cert && sudo systemctl restart dup\n\n"+
+			"If you already have a certificate, point at it instead:\n\n"+
+			"  tls:\n"+
+			"    cert_file: /etc/ssl/certs/yours.crt\n"+
+			"    key_file:  /etc/ssl/private/yours.key",
+			*configPath, *configPath)
 	}
 	if !cfg.TLS.SelfSigned {
-		return fmt.Errorf("tls.self_signed is not enabled, so dup will not overwrite %s; it expects a certificate you manage", cfg.TLS.CertFile)
+		return fmt.Errorf("tls.self_signed is not set, so dup will not overwrite %s; it expects the certificate you configured to be one you manage", cfg.TLS.CertFile)
 	}
 
 	if certs.Exists(cfg.TLS.CertFile, cfg.TLS.KeyFile) && !*force {
@@ -64,6 +73,9 @@ func runCert(args []string) error {
 		fmt.Printf("\nNot running as root, so ownership was left as-is.\n")
 		fmt.Printf("In production run this as root so the key ends up root:%s 0640.\n", cfg.AgentPeerUser)
 	}
+	fmt.Printf("\nTLS is enabled in %s, so dup will serve %s once restarted:\n\n", *configPath, apiURL(cfg))
+	fmt.Printf("  sudo systemctl restart dup\n")
+	fmt.Printf("  dup check\n")
 	fmt.Printf("\nThis is self-signed, so clients will not trust it until you tell them to.\n")
 	fmt.Printf("In n8n, either import %s as a trusted certificate or disable verification for this host only.\n", result.CertFile)
 	fmt.Printf("Pin the fingerprint above rather than turning verification off everywhere.\n")

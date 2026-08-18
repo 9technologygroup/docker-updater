@@ -28,9 +28,7 @@ func runCheck(args []string) error {
 			auto++
 		}
 	}
-	scheme := "http"
 	if cfg.TLS.Enabled() {
-		scheme = "https"
 		if !certs.Exists(cfg.TLS.CertFile, cfg.TLS.KeyFile) {
 			return fmt.Errorf("tls is enabled but %s or %s is missing; run 'dup cert' as root to create them", cfg.TLS.CertFile, cfg.TLS.KeyFile)
 		}
@@ -38,7 +36,7 @@ func runCheck(args []string) error {
 
 	fmt.Printf("config ok: %d %s (%d on auto update)\n",
 		len(cfg.Targets), plural(len(cfg.Targets), "stack", "stacks"), auto)
-	fmt.Printf("  api          %s://%s\n", scheme, cfg.Listen)
+	fmt.Printf("  api          %s\n", apiURL(cfg))
 	fmt.Printf("  agent socket %s\n", cfg.AgentSocket)
 	fmt.Printf("  allow from   %s\n", joinOr(cfg.AllowFrom, "anywhere that can reach the port"))
 	if len(cfg.TrustedProxies) > 0 {

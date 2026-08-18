@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/PatchMon/docker-updater/internal/config"
 	"github.com/PatchMon/docker-updater/internal/version"
 )
 
@@ -106,6 +107,13 @@ func newLogger(level string) *slog.Logger {
 		lvl = slog.LevelInfo
 	}
 	return slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: lvl}))
+}
+
+func apiURL(cfg *config.Config) string {
+	if cfg.TLS.Enabled() {
+		return "https://" + cfg.Listen
+	}
+	return "http://" + cfg.Listen
 }
 
 func plural(n int, one, many string) string {

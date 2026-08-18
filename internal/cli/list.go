@@ -52,7 +52,7 @@ func printHeader(cfg *config.Config) {
 		outbound = "none"
 	}
 	fmt.Printf("api %s   inbound %s   outbound %s\n\n",
-		cfg.Listen, joinOr(cfg.InboundMethods(), "none"), outbound)
+		apiURL(cfg), joinOr(cfg.InboundMethods(), "none"), outbound)
 }
 
 func printTargets(cfg *config.Config) {

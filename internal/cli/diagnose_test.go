@@ -8,6 +8,8 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+
+	"github.com/PatchMon/docker-updater/internal/config"
 )
 
 func TestAgentUnreachableSaysTheAgentIsNotRunning(t *testing.T) {
@@ -90,5 +92,22 @@ func TestAPIUnreachablePassesThroughOtherErrors(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "systemctl") {
 		t.Errorf("got: %v", err)
+	}
+}
+
+func TestAPIURLReflectsTLS(t *testing.T) {
+	plain := &config.Config{Listen: "127.0.0.1:7788"}
+	if got := apiURL(plain); got != "http://127.0.0.1:7788" {
+		t.Errorf("apiURL = %q, want http", got)
+	}
+
+	secure := &config.Config{Listen: "127.0.0.1:7788", TLS: config.TLS{SelfSigned: true}}
+	if got := apiURL(secure); got != "https://127.0.0.1:7788" {
+		t.Errorf("apiURL = %q, want https; dup list showing http while dup check showed https is what caused the confusion", got)
+	}
+
+	byoCert := &config.Config{Listen: "0.0.0.0:443", TLS: config.TLS{CertFile: "/a.crt", KeyFile: "/a.key"}}
+	if got := apiURL(byoCert); got != "https://0.0.0.0:443" {
+		t.Errorf("apiURL = %q, want https for a supplied certificate", got)
 	}
 }
