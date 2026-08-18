@@ -290,3 +290,16 @@ func write(t *testing.T, path, body string) {
 		t.Fatal(err)
 	}
 }
+
+// TestMain clears dup's own environment variables. An operator may well have
+// DUP_NO_UPDATE_CHECK exported, the docs suggest it, and inheriting it made ten
+// tests fail for a reason that had nothing to do with the code.
+func TestMain(m *testing.M) {
+	for _, k := range []string{
+		"DUP_NO_UPDATE_CHECK", "DUP_GITHUB_TOKEN", "DUP_GITHUB_REPO", "DUP_CACHE_FILE",
+		"UPDATER_BEARER_TOKEN", "UPDATER_GITHUB_SECRET",
+	} {
+		_ = os.Unsetenv(k)
+	}
+	os.Exit(m.Run())
+}

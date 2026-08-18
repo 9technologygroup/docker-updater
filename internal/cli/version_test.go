@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -183,4 +184,17 @@ func TestVersionDevBuildDoesNotCheck(t *testing.T) {
 	if hits.Load() != 0 {
 		t.Error("a dev build called the API")
 	}
+}
+
+// TestMain clears dup's own environment variables. An operator may well have
+// DUP_NO_UPDATE_CHECK exported, the docs suggest it, and inheriting it made ten
+// tests fail for a reason that had nothing to do with the code.
+func TestMain(m *testing.M) {
+	for _, k := range []string{
+		"DUP_NO_UPDATE_CHECK", "DUP_GITHUB_TOKEN", "DUP_GITHUB_REPO", "DUP_CACHE_FILE",
+		"UPDATER_BEARER_TOKEN", "UPDATER_GITHUB_SECRET",
+	} {
+		_ = os.Unsetenv(k)
+	}
+	os.Exit(m.Run())
 }

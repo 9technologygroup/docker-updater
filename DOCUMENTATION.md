@@ -341,7 +341,7 @@ host so you can decide what it should own.
 | `compose_file` | no | first of `compose.yaml`, `compose.yml`, `docker-compose.yaml`, `docker-compose.yml` found in `dir` | Bare filename inside `dir`. A path, or a symlink pointing outside `dir`, is refused |
 | `env_file` | no | compose's own `.env` handling | Bare filename inside `dir`, passed as `--env-file`. Same path and symlink rules as `compose_file` |
 | `services` | no | every service | Restrict the update to these. Also the health-check scope. Each must match `^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$` |
-| `auto_update` | no | `false` | Poll for a new image and apply it without being asked |
+| `auto_update` | no | `false` | Poll for a new image and apply it on a schedule. Off means dup never polls this stack at all. See [What `auto_update: false` actually means](#what-auto_update-false-actually-means) |
 | `check_interval` | no | `defaults.check_interval` | How often to poll. Minimum `1m`, and only used when `auto_update` is on |
 | `soak` | no | `defaults.soak` | How long a new image must have been available before it is applied. `0s` applies on sight. Cannot be negative |
 | `rollback` | no | `defaults.rollback` | Restore the previous images if the update does not come up healthy |
@@ -553,6 +553,42 @@ stateDiagram-v2
 dup wakes when the soak is due rather than waiting for the next `check_interval`, so a
 10 minute soak under a 12 hour interval applies 10 minutes later, not 12 hours later. A
 manual `dup update` clears a pending soak, so the two never disagree.
+
+### What `auto_update: false` actually means
+
+**Nobody gets asked.** There is no prompt, no approval queue, no notification. With
+`auto_update: false` dup is entirely passive for that stack:
+
+- the scheduler never polls it, so `dup list` shows a dash under `CHECK` and `NEXT`
+- dup never notices that a new image exists, so it cannot tell you about one
+- the stack changes only when something triggers it: `dup update <stack>`, a POST to the API,
+  or a webhook
+
+That last point is the one that surprises people. `auto_update: false` does not mean "warn me
+and wait". It means dup does nothing until told.
+
+**To find out whether something is waiting**, ask:
+
+```bash
+sudo dup scan            # every stack, whether or not it auto updates
+sudo dup scan app        # just one
+```
+
+`dup scan` ignores `auto_update` entirely, so it works the same on a manual stack. It pulls in
+order to compare, changes nothing, and does not start a soak.
+
+**If you want to be told rather than having to ask**, dup has no built-in "notify on new image
+available" mode. The `notify` webhook fires when a job finishes, not when an image appears.
+The practical options are:
+
+| You want | Do this |
+|---|---|
+| Told, decide yourself | `dup scan` from cron, and act on the exit code or output |
+| Applied, but not immediately | `auto_update: true` with a `soak` long enough to intervene, and watch `dup list` |
+| Applied only when you publish | Leave `auto_update: false` and fire the [GitHub webhook](#github-webhook) from your release |
+
+The third is usually the right answer if you control the images: it is exact, immediate, and
+nothing polls a registry at all.
 
 ### Auto update, and why there is a soak
 
