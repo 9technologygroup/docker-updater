@@ -47,6 +47,16 @@ test-coverage: ## Tests plus an HTML coverage report
 tidy: ## Tidy go.mod/go.sum
 	go mod tidy
 
+build-linux: ## Cross-build both binaries into dist/, named the way install.sh expects
+	@mkdir -p $(DIST)
+	@for arch in amd64 arm64 arm 386; do \
+		out="$$arch"; [ "$$arch" = arm ] && out=armv7; \
+		printf '  linux/%-8s' "$$arch"; \
+		GOOS=linux GOARCH=$$arch GOARM=7 CGO_ENABLED=0 go build -trimpath $(LDFLAGS) -o $(DIST)/$(BINARY)-linux-$$out $(PKG) && \
+		GOOS=linux GOARCH=$$arch GOARM=7 CGO_ENABLED=0 go build -trimpath $(LDFLAGS) -o $(DIST)/$(AGENT)-linux-$$out $(AGENT_PKG) && \
+		echo "ok" || { echo "FAILED"; exit 1; }; \
+	done
+
 crosscheck: ## Compile every release target, proving a tag will build
 	@command -v goreleaser >/dev/null 2>&1 || { \
 		echo "goreleaser is required so this checks the same targets a release builds."; \

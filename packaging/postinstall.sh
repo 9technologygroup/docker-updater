@@ -13,12 +13,6 @@ mkdir -p /etc/dup
 chown root:dup /etc/dup
 chmod 0750 /etc/dup
 
-if [ ! -f /etc/dup/config.yml ] && [ -f /etc/dup/config.example.yml ]; then
-    cp /etc/dup/config.example.yml /etc/dup/config.yml
-    chown root:dup /etc/dup/config.yml
-    chmod 0640 /etc/dup/config.yml
-fi
-
 for secret in bearer.token github.secret; do
     if [ ! -f "/etc/dup/${secret}" ]; then
         if command -v openssl >/dev/null 2>&1; then
@@ -38,16 +32,43 @@ if command -v systemctl >/dev/null 2>&1; then
     fi
 fi
 
-cat <<'BANNER'
+if [ -f /etc/dup/config.yml ]; then
+    cat <<'BANNER'
 
-dup installed.
+dup upgraded. Validate and restart:
 
-  1. edit  /etc/dup/config.yml   so the stacks match this host
-  2. run   dup check
-  3. run   dup audit
-  4. run   systemctl enable --now dup-agent dup
+  sudo dup check
+  sudo dup audit
+  sudo systemctl restart dup-agent dup
+  systemctl status dup-agent dup
 
-  bearer token:  cat /etc/dup/bearer.token
+BANNER
+else
+    cat <<'BANNER'
+
+dup installed. Nothing is running yet, because there is no config.
+
+  1. Copy the reference config and edit it for this host:
+       sudo cp /etc/dup/config.example.yml /etc/dup/config.yml
+       sudo chown root:dup /etc/dup/config.yml && sudo chmod 0640 /etc/dup/config.yml
+       sudo $EDITOR /etc/dup/config.yml
+
+  2. Validate it:
+       sudo dup check
+
+  3. Prove the dup account cannot rewrite what runs as root:
+       sudo dup audit
+
+  4. Start it:
+       sudo systemctl enable --now dup-agent dup
+
+  5. Confirm it is up:
+       systemctl status dup-agent dup
+       dup list
+       journalctl -u dup -u dup-agent -f
+
+  bearer token:  sudo cat /etc/dup/bearer.token
   docs:          https://github.com/9technologygroup/docker-updater
 
 BANNER
+fi

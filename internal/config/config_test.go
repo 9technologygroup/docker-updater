@@ -422,3 +422,42 @@ func TestPreUpdateHookValidation(t *testing.T) {
 		t.Fatalf("error = %v, want an absolute path complaint", err)
 	}
 }
+
+func TestSecretGroupIsCheckedAgainstTheServiceAccountNotTheCaller(t *testing.T) {
+	secret := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(secret, []byte(goodToken), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(secret, 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	info, err := os.Stat(secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		t.Skip("no POSIX stat available")
+	}
+	fileGID := int64(stat.Gid)
+
+	// Production is root:dup 0640, read by root commands such as the agent
+	// unit's ExecStartPre. Keying this on the caller's gid rejected exactly
+	// that, so the agent could never start.
+	if err := checkSecretFile(secret, info, fileGID, true); err != nil {
+		t.Errorf("a secret group-owned by the service account must be accepted: %v", err)
+	}
+
+	// A group that is neither the caller's nor the service account's must fail,
+	// which is what stops root:docker 0640 handing the token to the docker group.
+	unrelated := fileGID + 1
+	if unrelated == int64(os.Getgid()) {
+		unrelated++
+	}
+	if fileGID != int64(os.Getgid()) {
+		if err := checkSecretFile(secret, info, unrelated, true); err == nil {
+			t.Error("a secret readable by an unrelated group must be rejected")
+		}
+	}
+}

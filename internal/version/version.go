@@ -18,7 +18,7 @@ var (
 func Short() string { return Version }
 
 func Info(binary string) string {
-	return fmt.Sprintf("%s %s (%s) built %s with %s", binary, Version, ShortCommit(), Date, GoVersion)
+	return fmt.Sprintf("%s %s (%s)", binary, Version, ShortCommit())
 }
 
 func Full(binary string) string {

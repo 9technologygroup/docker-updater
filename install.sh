@@ -162,7 +162,7 @@ if [ -z "${API_SRC}" ] || [ -z "${AGENT_SRC}" ]; then
         warn ""
         warn "Or install from a clone without waiting for a release:"
         warn "    git clone https://github.com/${GITHUB_REPO}"
-        warn "    cd docker-updater && make build-linux && sudo ./install.sh"
+        warn "    cd docker-updater && make build && sudo ./install.sh"
         warn ""
         warn "Or point at a specific tag:  DUP_VERSION=v0.1.0 sudo -E sh install.sh"
         exit 1
@@ -218,16 +218,10 @@ install_secret() {
 install_secret "${TOKEN_FILE}" "bearer token"
 install_secret "${GH_SECRET_FILE}" "github webhook secret"
 
-if [ -f "${CONF_FILE}" ]; then
-    log "keeping existing ${CONF_FILE}"
-else
-    [ -f "${SRC_DIR}/deploy/config.example.yml" ] || die "deploy/config.example.yml not found next to this script"
-    install -m 0640 -o root -g "${SVC_USER}" "${SRC_DIR}/deploy/config.example.yml" "${CONF_FILE}"
-    log "wrote starter config to ${CONF_FILE}"
-    warn "edit ${CONF_FILE} so the stacks match this host, then re-run this script"
-fi
-chown root:"${SVC_USER}" "${CONF_FILE}"
-chmod 0640 "${CONF_FILE}"
+EXAMPLE_FILE="${CONF_DIR}/config.example.yml"
+[ -f "${SRC_DIR}/deploy/config.example.yml" ] || die "deploy/config.example.yml not found next to this script"
+install -m 0640 -o root -g "${SVC_USER}" "${SRC_DIR}/deploy/config.example.yml" "${EXAMPLE_FILE}"
+log "installed reference config to ${EXAMPLE_FILE}"
 
 log "installing systemd units"
 for unit in "${AGENT_BIN}.service" "${API_BIN}.service"; do
@@ -239,23 +233,74 @@ for unit in "${AGENT_BIN}.service" "${API_BIN}.service"; do
 done
 systemctl daemon-reload
 
+DUP_VER="$("${BIN_DIR}/${API_BIN}" version 2>/dev/null || echo dup)"
+
+if [ ! -f "${CONF_FILE}" ]; then
+    echo
+    log "${DUP_VER} installed. Nothing is running yet, because there is no config."
+    echo
+    echo "  binaries      ${BIN_DIR}/${API_BIN}, ${BIN_DIR}/${AGENT_BIN}"
+    echo "  units         ${API_BIN}.service, ${AGENT_BIN}.service  (installed, not enabled)"
+    echo "  config dir    ${CONF_DIR}  (root:${SVC_USER} 0750)"
+    echo "  reference     ${EXAMPLE_FILE}"
+    echo "  bearer token  ${TOKEN_FILE}"
+    echo "  github secret ${GH_SECRET_FILE}"
+    echo
+    echo "Next steps"
+    echo
+    echo "  1. Copy the reference config and edit it so the stacks match this host."
+    echo "     Every stack needs a name and the directory its compose file lives in."
+    echo
+    echo "       sudo cp ${EXAMPLE_FILE} ${CONF_FILE}"
+    echo "       sudo chown root:${SVC_USER} ${CONF_FILE} && sudo chmod 0640 ${CONF_FILE}"
+    echo "       sudo \$EDITOR ${CONF_FILE}"
+    echo
+    echo "  2. Check the config parses and every stack directory exists."
+    echo
+    echo "       sudo ${API_BIN} check"
+    echo
+    echo "  3. Prove the ${SVC_USER} account cannot rewrite anything that runs as root."
+    echo "     This must pass, or the privilege split buys you nothing."
+    echo
+    echo "       sudo ${API_BIN} audit"
+    echo
+    echo "  4. Start it."
+    echo
+    echo "       sudo systemctl enable --now ${AGENT_BIN} ${API_BIN}"
+    echo
+    echo "  5. Confirm it is up."
+    echo
+    echo "       systemctl status ${AGENT_BIN} ${API_BIN}"
+    echo "       ${API_BIN} list"
+    echo "       journalctl -u ${API_BIN} -u ${AGENT_BIN} -f"
+    echo
+    echo "  Re-running this installer later upgrades the binaries and leaves your"
+    echo "  config and secrets untouched."
+    echo
+    exit 0
+fi
+
+log "found ${CONF_FILE}, validating before restarting"
+
 if grep -qE '^[[:space:]]*self_signed:[[:space:]]*true' "${CONF_FILE}"; then
     log "ensuring the self-signed certificate exists"
     "${BIN_DIR}/${API_BIN}" cert --config "${CONF_FILE}" || die "could not create the TLS certificate"
 fi
 
 if ! "${BIN_DIR}/${API_BIN}" check --config "${CONF_FILE}"; then
-    warn "config check failed, nothing was started"
-    warn "fix ${CONF_FILE}, then re-run this script"
+    echo >&2
+    warn "The config did not validate, so nothing was restarted."
+    warn "The previously running version, if any, is untouched."
+    warn "Fix the problems above and re-run:  sudo ${API_BIN} check"
     exit 1
 fi
 
 if ! "${BIN_DIR}/${API_BIN}" audit --config "${CONF_FILE}"; then
     echo >&2
     warn "REFUSING TO START."
-    warn "The service account can write files that decide what the root agent runs, so the"
-    warn "privilege split would be decoration. Fix the paths listed above, then re-run this script."
-    warn "Typically: chown -R root:root <stack dir> && chmod -R go-w <stack dir>"
+    warn "The ${SVC_USER} account can write files that decide what the root agent runs,"
+    warn "so the privilege split would be decoration. Fix the paths listed above."
+    warn "Typically:  sudo chown -R root:root <stack dir> && sudo chmod -R go-w <stack dir>"
     exit 1
 fi
 
@@ -287,31 +332,37 @@ if grep -qE '^[[:space:]]*(self_signed:[[:space:]]*true|cert_file:[[:space:]]*[^
 fi
 
 echo
-log "installed and running (${MODE})"
+log "${DUP_VER} running (${MODE})"
 echo
-echo "  dup         ${API_BIN}.service        runs as ${SVC_USER}, no docker access"
-echo "  dup-agent   ${AGENT_BIN}.service  runs as root, unix socket only, no network"
+echo "  dup         runs as ${SVC_USER}, no docker access"
+echo "  dup-agent   runs as root, unix socket only, no network listener"
 echo "  listening   ${SCHEME}://${LISTEN}"
 echo "  config      ${CONF_FILE}  (root:${SVC_USER} 0640)"
-echo "  logs        journalctl -u ${API_BIN} -u ${AGENT_BIN} -f"
+echo
+echo "Check on it"
+echo
+echo "  systemctl status ${AGENT_BIN} ${API_BIN}"
+echo "  journalctl -u ${API_BIN} -u ${AGENT_BIN} -f"
+echo "  ${API_BIN} list                 stacks, update policy, and what is not covered"
+echo "  ${API_BIN} status               recent update jobs"
+echo "  ${API_BIN} version --full       version, commit, licence, source"
+echo
+echo "Try an update without changing anything"
+echo
+echo "  sudo ${API_BIN} update <stack> --dry-run"
 echo
 if [ "${UPGRADE}" = "yes" ]; then
-    echo "  secrets unchanged; read them with:"
-    echo "    cat ${TOKEN_FILE}"
-    echo "    cat ${GH_SECRET_FILE}"
+    echo "  Secrets were left alone. Read them with:"
+    echo "    sudo cat ${TOKEN_FILE}"
+    echo "    sudo cat ${GH_SECRET_FILE}"
 else
     echo "  bearer token   $(cat "${TOKEN_FILE}")"
     echo "  github secret  $(cat "${GH_SECRET_FILE}")"
 fi
 echo
-echo "  try it:"
-echo "    dup list"
-echo "    dup status"
-echo "    dup update <stack> --dry-run"
-echo
 if [ "${SCHEME}" = "https" ]; then
     echo "  dup is serving TLS itself, so a reverse proxy is optional."
-    echo "  If you put one in front anyway, add its address to trusted_proxies in the config,"
+    echo "  If you put one in front anyway, add its address to trusted_proxies,"
     echo "  otherwise allow_from will see the proxy rather than the real caller."
     echo
 fi

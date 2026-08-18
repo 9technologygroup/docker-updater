@@ -6,8 +6,10 @@ import (
 	"net/netip"
 	"net/url"
 	"os"
+	"os/user"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -302,11 +304,13 @@ func (c *Config) applyDefaults() error {
 }
 
 func (c *Config) resolveSecrets() error {
-	bearer, err := resolveSecret("bearer token", c.Auth.BearerToken, c.Auth.BearerTokenFile, "UPDATER_BEARER_TOKEN")
+	serviceGID, haveServiceGID := lookupServiceGID(c.AgentPeerUser)
+
+	bearer, err := resolveSecret("bearer token", c.Auth.BearerToken, c.Auth.BearerTokenFile, "UPDATER_BEARER_TOKEN", serviceGID, haveServiceGID)
 	if err != nil {
 		return err
 	}
-	gh, err := resolveSecret("github secret", c.Auth.GitHubSecret, c.Auth.GitHubSecretFile, "UPDATER_GITHUB_SECRET")
+	gh, err := resolveSecret("github secret", c.Auth.GitHubSecret, c.Auth.GitHubSecretFile, "UPDATER_GITHUB_SECRET", serviceGID, haveServiceGID)
 	if err != nil {
 		return err
 	}
@@ -320,7 +324,22 @@ func (c *Config) resolveSecrets() error {
 	return nil
 }
 
-func resolveSecret(label, inline, file, envKey string) ([]byte, error) {
+func lookupServiceGID(name string) (int64, bool) {
+	if name == "" {
+		return 0, false
+	}
+	u, err := user.Lookup(name)
+	if err != nil {
+		return 0, false
+	}
+	gid, err := strconv.ParseInt(u.Gid, 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	return gid, true
+}
+
+func resolveSecret(label, inline, file, envKey string, serviceGID int64, haveServiceGID bool) ([]byte, error) {
 	var val string
 	switch {
 	case os.Getenv(envKey) != "":
@@ -333,7 +352,7 @@ func resolveSecret(label, inline, file, envKey string) ([]byte, error) {
 		if err != nil {
 			return nil, fmt.Errorf("auth: %s file: %w", label, err)
 		}
-		if err := checkSecretFile(file, info); err != nil {
+		if err := checkSecretFile(file, info, serviceGID, haveServiceGID); err != nil {
 			return nil, fmt.Errorf("auth: %s file %s %s", label, file, err)
 		}
 		b, err := os.ReadFile(file)
@@ -355,7 +374,7 @@ func resolveSecret(label, inline, file, envKey string) ([]byte, error) {
 	return []byte(val), nil
 }
 
-func checkSecretFile(path string, info os.FileInfo) error {
+func checkSecretFile(path string, info os.FileInfo, serviceGID int64, haveServiceGID bool) error {
 	if !info.Mode().IsRegular() {
 		return fmt.Errorf("is not a regular file")
 	}
@@ -369,8 +388,18 @@ func checkSecretFile(path string, info os.FileInfo) error {
 		if stat.Uid != 0 && int64(stat.Uid) != int64(os.Getuid()) {
 			return fmt.Errorf("is owned by uid %d; it must be owned by root", stat.Uid)
 		}
-		if perm&0o040 != 0 && int64(stat.Gid) != int64(os.Getgid()) {
-			return fmt.Errorf("is group readable by gid %d, which is not the group this service runs as (%d); anyone in that group can read it", stat.Gid, os.Getgid())
+		// The group must be the account the service runs as. Comparing against the
+		// current process group instead would reject root:dup 0640 whenever a root
+		// command such as `dup check` reads it, which is every ExecStartPre.
+		if perm&0o040 != 0 {
+			fileGID := int64(stat.Gid)
+			allowed := fileGID == int64(os.Getgid())
+			if haveServiceGID && fileGID == serviceGID {
+				allowed = true
+			}
+			if !allowed {
+				return fmt.Errorf("is group readable by gid %d, which is neither this process's group (%d) nor the service account's group; anyone in that group could read it", stat.Gid, os.Getgid())
+			}
 		}
 	}
 

@@ -55,14 +55,25 @@ make build-linux
 sudo ./install.sh
 ```
 
-Then point it at your stacks:
+The installer deliberately does **not** create `/etc/dup/config.yml` or start anything. It drops a reference config next to it and tells you what to do. Point it at your stacks:
 
 ```sh
+sudo cp /etc/dup/config.example.yml /etc/dup/config.yml
+sudo chown root:dup /etc/dup/config.yml && sudo chmod 0640 /etc/dup/config.yml
 sudo $EDITOR /etc/dup/config.yml
-dup check          # validates the config
-dup audit          # proves the service account cannot rewrite what runs as root
+
+sudo dup check     # config parses and every stack directory exists
+sudo dup audit     # the dup account cannot rewrite what runs as root
 sudo systemctl enable --now dup-agent dup
+```
+
+Then check on it:
+
+```sh
+systemctl status dup-agent dup
+journalctl -u dup -u dup-agent -f
 dup list
+dup status
 ```
 
 ### Upgrading
@@ -86,7 +97,7 @@ Pin a specific version with `DUP_VERSION=v1.2.3` in front of the installer.
 | `dup check` | Validate the config |
 | `dup audit` | Verify the service account cannot rewrite what runs as root |
 | `dup cert` | Generate the self-signed TLS certificate (run as root) |
-| `dup version` | Version, commit and build date. `--full` for everything |
+| `dup version` | Version and commit. `--full` adds build date, toolchain, licence and source |
 | `dup serve` | The unprivileged HTTP API (systemd runs this) |
 | `dup-agent` | The privileged agent (systemd runs this) |
 
