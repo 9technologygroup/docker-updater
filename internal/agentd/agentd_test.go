@@ -13,11 +13,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/PatchMon/docker-updater/internal/compose"
-	"github.com/PatchMon/docker-updater/internal/config"
-	"github.com/PatchMon/docker-updater/internal/job"
-	"github.com/PatchMon/docker-updater/internal/pipeline"
-	"github.com/PatchMon/docker-updater/internal/wire"
+	"github.com/9technologygroup/docker-updater/internal/compose"
+	"github.com/9technologygroup/docker-updater/internal/config"
+	"github.com/9technologygroup/docker-updater/internal/job"
+	"github.com/9technologygroup/docker-updater/internal/pipeline"
+	"github.com/9technologygroup/docker-updater/internal/wire"
 )
 
 func newTestConfig(t *testing.T, sock string) *config.Config {

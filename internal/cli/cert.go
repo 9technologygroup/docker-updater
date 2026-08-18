@@ -7,8 +7,8 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/PatchMon/docker-updater/internal/certs"
-	"github.com/PatchMon/docker-updater/internal/config"
+	"github.com/9technologygroup/docker-updater/internal/certs"
+	"github.com/9technologygroup/docker-updater/internal/config"
 )
 
 func runCert(args []string) error {

@@ -15,11 +15,11 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/PatchMon/docker-updater/internal/agentd"
-	"github.com/PatchMon/docker-updater/internal/compose"
-	"github.com/PatchMon/docker-updater/internal/config"
-	"github.com/PatchMon/docker-updater/internal/pipeline"
-	"github.com/PatchMon/docker-updater/internal/version"
+	"github.com/9technologygroup/docker-updater/internal/agentd"
+	"github.com/9technologygroup/docker-updater/internal/compose"
+	"github.com/9technologygroup/docker-updater/internal/config"
+	"github.com/9technologygroup/docker-updater/internal/pipeline"
+	"github.com/9technologygroup/docker-updater/internal/version"
 )
 
 const shutdownGrace = 90 * time.Second

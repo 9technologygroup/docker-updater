@@ -8,28 +8,28 @@ import (
 )
 
 func TestDupDoesNotLinkAnythingThatCanExecDocker(t *testing.T) {
-	out, err := exec.Command("go", "list", "-deps", "github.com/PatchMon/docker-updater/cmd/dup").Output()
+	out, err := exec.Command("go", "list", "-deps", "github.com/9technologygroup/docker-updater/cmd/dup").Output()
 	if err != nil {
 		t.Skipf("go list unavailable: %v", err)
 	}
 
 	for _, pkg := range strings.Fields(string(out)) {
 		switch pkg {
-		case "github.com/PatchMon/docker-updater/internal/compose",
-			"github.com/PatchMon/docker-updater/internal/pipeline",
-			"github.com/PatchMon/docker-updater/internal/discover",
-			"github.com/PatchMon/docker-updater/internal/agentd":
+		case "github.com/9technologygroup/docker-updater/internal/compose",
+			"github.com/9technologygroup/docker-updater/internal/pipeline",
+			"github.com/9technologygroup/docker-updater/internal/discover",
+			"github.com/9technologygroup/docker-updater/internal/agentd":
 			t.Errorf("dup links %s; the unprivileged binary must not contain code that can exec docker", pkg)
 		}
 	}
 }
 
 func TestDupAgentLinksTheDockerLayer(t *testing.T) {
-	out, err := exec.Command("go", "list", "-deps", "github.com/PatchMon/docker-updater/cmd/dup-agent").Output()
+	out, err := exec.Command("go", "list", "-deps", "github.com/9technologygroup/docker-updater/cmd/dup-agent").Output()
 	if err != nil {
 		t.Skipf("go list unavailable: %v", err)
 	}
-	if !strings.Contains(string(out), "github.com/PatchMon/docker-updater/internal/compose") {
+	if !strings.Contains(string(out), "github.com/9technologygroup/docker-updater/internal/compose") {
 		t.Error("dup-agent should link internal/compose; it is the half that talks to docker")
 	}
 }

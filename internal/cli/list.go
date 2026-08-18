@@ -8,10 +8,10 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/PatchMon/docker-updater/internal/agent"
-	"github.com/PatchMon/docker-updater/internal/config"
-	"github.com/PatchMon/docker-updater/internal/version"
-	"github.com/PatchMon/docker-updater/internal/wire"
+	"github.com/9technologygroup/docker-updater/internal/agent"
+	"github.com/9technologygroup/docker-updater/internal/config"
+	"github.com/9technologygroup/docker-updater/internal/version"
+	"github.com/9technologygroup/docker-updater/internal/wire"
 )
 
 func runList(args []string) error {

@@ -1,6 +1,6 @@
 [Unit]
 Description=dup update agent (privileged, no network listener)
-Documentation=https://github.com/PatchMon/docker-updater
+Documentation=https://github.com/9technologygroup/docker-updater
 After=network-online.target docker.service
 Wants=network-online.target
 Requires=docker.service

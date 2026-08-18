@@ -7,8 +7,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/PatchMon/docker-updater/internal/config"
-	"github.com/PatchMon/docker-updater/internal/version"
+	"github.com/9technologygroup/docker-updater/internal/config"
+	"github.com/9technologygroup/docker-updater/internal/version"
 )
 
 const DefaultConfigPath = "/etc/dup/config.yml"

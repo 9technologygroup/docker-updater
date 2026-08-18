@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/PatchMon/docker-updater/internal/certs"
-	"github.com/PatchMon/docker-updater/internal/config"
+	"github.com/9technologygroup/docker-updater/internal/certs"
+	"github.com/9technologygroup/docker-updater/internal/config"
 )
 
 func runCheck(args []string) error {

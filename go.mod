@@ -1,4 +1,4 @@
-module github.com/PatchMon/docker-updater
+module github.com/9technologygroup/docker-updater
 
 go 1.26.6
 

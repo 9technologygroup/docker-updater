@@ -17,9 +17,9 @@ builds:
       - -trimpath
     ldflags: &ldflags
       - -s -w
-      - -X github.com/PatchMon/docker-updater/internal/version.Version={{ .Version }}
-      - -X github.com/PatchMon/docker-updater/internal/version.Commit={{ .FullCommit }}
-      - -X github.com/PatchMon/docker-updater/internal/version.Date={{ .Date }}
+      - -X github.com/9technologygroup/docker-updater/internal/version.Version={{ .Version }}
+      - -X github.com/9technologygroup/docker-updater/internal/version.Commit={{ .FullCommit }}
+      - -X github.com/9technologygroup/docker-updater/internal/version.Date={{ .Date }}
     # The one place release targets are defined. dup-agent aliases these, and
     # `make crosscheck` builds from this file, so nothing can drift.
     goos: &goos [linux]

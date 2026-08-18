@@ -1,6 +1,6 @@
 [Unit]
 Description=dup API (unprivileged)
-Documentation=https://github.com/PatchMon/docker-updater
+Documentation=https://github.com/9technologygroup/docker-updater
 After=network-online.target dup-agent.service
 Wants=network-online.target
 Requires=dup-agent.service

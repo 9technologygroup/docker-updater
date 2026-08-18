@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/PatchMon/docker-updater/internal/compose"
-	"github.com/PatchMon/docker-updater/internal/config"
+	"github.com/9technologygroup/docker-updater/internal/compose"
+	"github.com/9technologygroup/docker-updater/internal/config"
 )
 
 func TestSettled(t *testing.T) {

@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/PatchMon/docker-updater/internal/cli"
+	"github.com/9technologygroup/docker-updater/internal/cli"
 )
 
 func main() {

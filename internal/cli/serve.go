@@ -14,15 +14,15 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/PatchMon/docker-updater/internal/agent"
-	"github.com/PatchMon/docker-updater/internal/audit"
-	"github.com/PatchMon/docker-updater/internal/certs"
-	"github.com/PatchMon/docker-updater/internal/config"
-	"github.com/PatchMon/docker-updater/internal/job"
-	"github.com/PatchMon/docker-updater/internal/notify"
-	"github.com/PatchMon/docker-updater/internal/schedule"
-	"github.com/PatchMon/docker-updater/internal/server"
-	"github.com/PatchMon/docker-updater/internal/version"
+	"github.com/9technologygroup/docker-updater/internal/agent"
+	"github.com/9technologygroup/docker-updater/internal/audit"
+	"github.com/9technologygroup/docker-updater/internal/certs"
+	"github.com/9technologygroup/docker-updater/internal/config"
+	"github.com/9technologygroup/docker-updater/internal/job"
+	"github.com/9technologygroup/docker-updater/internal/notify"
+	"github.com/9technologygroup/docker-updater/internal/schedule"
+	"github.com/9technologygroup/docker-updater/internal/server"
+	"github.com/9technologygroup/docker-updater/internal/version"
 )
 
 const serveShutdownGrace = 30 * time.Second

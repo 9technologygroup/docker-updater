@@ -95,7 +95,7 @@ jobs:
       - name: dup must not link any docker-calling package
         run: |
           for pkg in internal/compose internal/pipeline internal/discover internal/agentd; do
-            if go list -deps ./cmd/dup | grep -qx "github.com/PatchMon/docker-updater/${pkg}"; then
+            if go list -deps ./cmd/dup | grep -qx "github.com/9technologygroup/docker-updater/${pkg}"; then
               echo "cmd/dup links ${pkg}, which can execute docker"
               exit 1
             fi

@@ -7,9 +7,9 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/PatchMon/docker-updater/internal/compose"
-	"github.com/PatchMon/docker-updater/internal/config"
-	"github.com/PatchMon/docker-updater/internal/wire"
+	"github.com/9technologygroup/docker-updater/internal/compose"
+	"github.com/9technologygroup/docker-updater/internal/config"
+	"github.com/9technologygroup/docker-updater/internal/wire"
 )
 
 func Run(ctx context.Context, r *compose.Runner, cfg *config.Config) wire.DiscoverResult {
