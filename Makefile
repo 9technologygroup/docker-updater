@@ -15,7 +15,7 @@ LDFLAGS := -ldflags "-s -w \
 
 DIST := dist
 
-.PHONY: all build check fmt fmt-check vet lint test test-coverage clean crosscheck snapshot tidy help
+.PHONY: all build check fmt fmt-check vet lint test test-coverage clean crosscheck snapshot tidy diagram help
 
 all: check build ## Run every check, then build
 
@@ -70,6 +70,9 @@ snapshot: ## Full release dry run into dist/
 
 clean: ## Remove build output
 	rm -rf $(BINARY) $(AGENT) $(DIST) coverage.out coverage.html
+
+diagram: ## Regenerate docs/architecture.png from docs/architecture.mmd
+	npx -y @mermaid-js/mermaid-cli -i docs/architecture.mmd -o docs/architecture.png -b white -w 1600
 
 help: ## List targets
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'

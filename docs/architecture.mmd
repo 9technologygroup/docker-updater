@@ -1,0 +1,28 @@
+flowchart LR
+    W["Webhook<br/>n8n, GitHub release"]
+    C["dup CLI"]
+
+    subgraph host["One Docker host"]
+        direction LR
+        A["<b>dup</b> &nbsp; unprivileged<br/>runs as the dup account<br/>no Docker access at all<br/>API, auth, jobs, scheduler"]
+        S(["unix socket<br/>0660 root:dup<br/>SO_PEERCRED checked"])
+        B["<b>dup-agent</b> &nbsp; root<br/>no network listener<br/>docker compose<br/>health checks, rollback"]
+        D[("Your Compose stacks")]
+    end
+
+    N["Discord, n8n"]
+
+    W -- "HTTPS, bearer or HMAC" --> A
+    C -- "HTTPS, bearer" --> A
+    A --> S --> B
+    B -- "pull, up, health" --> D
+    A -. "job result" .-> N
+
+    classDef unpriv fill:#e2efee,stroke:#0d6b68,stroke-width:2px,color:#14191c
+    classDef priv fill:#f7e6e2,stroke:#a03020,stroke-width:2px,color:#14191c
+    classDef edge fill:#f3f4f2,stroke:#66757e,color:#14191c
+    classDef sock fill:#fffbe6,stroke:#a86a14,stroke-width:2px,color:#14191c
+    class A unpriv
+    class B priv
+    class W,C,N,D edge
+    class S sock

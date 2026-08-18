@@ -48,6 +48,8 @@ archives:
     files:
       - install.sh
       - README.md
+      - DOCUMENTATION.md
+      - SECURITY.md
       - LICENSE
       - src: deploy/*
         dst: deploy
