@@ -17,6 +17,13 @@ history_file: /var/lib/dup/history.jsonl
 history_max_size_mb: 8
 history_keep: 4
 
+# Where "sudo dup auth <stack>" keeps registry credentials, one directory per
+# stack so two stacks on the same registry can use different accounts. Each is
+# 0700 root:root, so the dup service account cannot read any of them. A stack
+# that has never run dup auth inherits root's own /root/.docker/config.json
+# exactly as before, so leaving this alone changes nothing.
+# docker_config_dir: /etc/dup/docker
+
 # HTTPS is on by default. The installer generates the pair below before you get
 # here, so copying this file is all it takes.
 #

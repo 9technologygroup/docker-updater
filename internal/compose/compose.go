@@ -241,9 +241,22 @@ var passthroughEnv = []string{
 	"http_proxy", "https_proxy", "no_proxy",
 }
 
+// childEnv drops any inherited variable that extra also sets, rather than
+// relying on a later duplicate winning: which of two entries the child sees is
+// platform dependent, and DOCKER_CONFIG decides which credentials a pull uses.
 func childEnv(extra []string) []string {
+	overridden := make(map[string]bool, len(extra))
+	for _, kv := range extra {
+		if key, _, ok := strings.Cut(kv, "="); ok {
+			overridden[key] = true
+		}
+	}
+
 	out := make([]string, 0, len(passthroughEnv)+len(extra))
 	for _, key := range passthroughEnv {
+		if overridden[key] {
+			continue
+		}
 		if v, ok := os.LookupEnv(key); ok {
 			out = append(out, key+"="+v)
 		}

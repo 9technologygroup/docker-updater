@@ -19,6 +19,8 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/9technologygroup/docker-updater/internal/dockercfg"
 )
 
 const (
@@ -28,6 +30,7 @@ const (
 	DefaultKeyFile     = "/etc/dup/self-signed.key"
 	DefaultLogFile     = "/var/log/dup/dup.log"
 	DefaultHistoryFile = "/var/lib/dup/history.jsonl"
+	DefaultDockerCfg   = dockercfg.DefaultBase
 	MinSecretLen       = 32
 	MaxBodyBytes       = 1 << 20
 	MaxSocketPathLen   = 100
@@ -55,6 +58,7 @@ type Config struct {
 	LogMaxSizeMB     int       `yaml:"log_max_size_mb"`
 	LogKeep          int       `yaml:"log_keep"`
 	HistoryFile      string    `yaml:"history_file"`
+	DockerConfigDir  string    `yaml:"docker_config_dir"`
 	HistoryMaxSizeMB int       `yaml:"history_max_size_mb"`
 	HistoryKeep      int       `yaml:"history_keep"`
 	Auth             Auth      `yaml:"auth"`
@@ -158,10 +162,20 @@ type Target struct {
 	StabilityWindow time.Duration  `yaml:"stability_window"`
 	PreUpdate       *Hook          `yaml:"pre_update"`
 
-	soak time.Duration
+	soak      time.Duration
+	dockerCfg string
 }
 
 func (t *Target) SoakWindow() time.Duration { return t.soak }
+
+// DockerConfigDir is where this stack's own registry credentials live. The
+// agent points DOCKER_CONFIG at it only when HasDockerConfig, so a host that
+// has never run `dup auth` keeps using root's own docker config.
+func (t *Target) DockerConfigDir() string { return t.dockerCfg }
+
+func (t *Target) HasDockerConfig() bool {
+	return t.dockerCfg != "" && dockercfg.Exists(t.dockerCfg)
+}
 
 func (t *Target) RollbackEnabled() bool { return t.Rollback == nil || *t.Rollback }
 
@@ -313,6 +327,13 @@ func (c *Config) applyDefaults() error {
 	if c.HistoryFile == "none" {
 		c.HistoryFile = ""
 	}
+	if c.DockerConfigDir == "" {
+		c.DockerConfigDir = DefaultDockerCfg
+	}
+	if !filepath.IsAbs(c.DockerConfigDir) {
+		return fmt.Errorf("docker_config_dir must be an absolute path")
+	}
+	c.DockerConfigDir = filepath.Clean(c.DockerConfigDir)
 	for _, f := range []struct {
 		name, path string
 	}{{"log_file", c.LogFile}, {"history_file", c.HistoryFile}} {
@@ -529,6 +550,12 @@ func (c *Config) validateTargets(checkPaths bool) error {
 		if _, dup := c.byName[t.Name]; dup {
 			return fmt.Errorf("targets: duplicate name %q", t.Name)
 		}
+
+		store, err := dockercfg.StoreDir(c.DockerConfigDir, t.Name)
+		if err != nil {
+			return fmt.Errorf("target %q: %w", t.Name, err)
+		}
+		t.dockerCfg = store
 
 		if !filepath.IsAbs(t.Dir) {
 			return fmt.Errorf("target %q: dir must be an absolute path", t.Name)
