@@ -16,9 +16,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/9technologygroup/docker-updater/internal/agent"
 	"github.com/9technologygroup/docker-updater/internal/config"
 	"github.com/9technologygroup/docker-updater/internal/job"
 	"github.com/9technologygroup/docker-updater/internal/selfupdate"
+	"github.com/9technologygroup/docker-updater/internal/wire"
 )
 
 const (
@@ -410,5 +412,53 @@ func TestTargetsReportPendingSoak(t *testing.T) {
 	rec := do(t, s, http.MethodGet, "/v1/targets", "", map[string]string{"Authorization": "Bearer " + testToken})
 	if !strings.Contains(rec.Body.String(), "pending_since") {
 		t.Errorf("targets did not report the soak state: %s", rec.Body.String())
+	}
+}
+
+// Ibrahim's case: the agent said 409 because the scheduler held the lock, and the
+// API relabelled it 500, which read as "dup is broken" instead of "try again".
+func TestAgentStatusIsNotFlattenedTo500(t *testing.T) {
+	cases := []struct {
+		agentStatus int
+		want        int
+	}{
+		{http.StatusConflict, http.StatusConflict},
+		{http.StatusServiceUnavailable, http.StatusServiceUnavailable},
+		{http.StatusNotFound, http.StatusNotFound},
+		{http.StatusInternalServerError, http.StatusInternalServerError},
+	}
+	for _, tc := range cases {
+		s := newTestServer(t, "").WithChecker(func(context.Context, string) (wire.CheckResult, error) {
+			return wire.CheckResult{}, &agent.StatusError{Status: tc.agentStatus, Msg: "from the agent"}
+		})
+		rec := do(t, s, http.MethodPost, "/v1/targets/pmon/check", "", bearer())
+		if rec.Code != tc.want {
+			t.Errorf("agent %d became %d, want %d", tc.agentStatus, rec.Code, tc.want)
+		}
+		if !strings.Contains(rec.Body.String(), "from the agent") {
+			t.Errorf("agent %d lost its message: %s", tc.agentStatus, rec.Body.String())
+		}
+	}
+}
+
+func TestCheckNowSucceeds(t *testing.T) {
+	s := newTestServer(t, "").WithChecker(func(context.Context, string) (wire.CheckResult, error) {
+		return wire.CheckResult{Available: true, Changed: []string{"database", "server"}, Message: "new image"}, nil
+	})
+	rec := do(t, s, http.MethodPost, "/v1/targets/pmon/check", "", bearer())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	for _, want := range []string{`"available":true`, "database", "server"} {
+		if !strings.Contains(rec.Body.String(), want) {
+			t.Errorf("body missing %s: %s", want, rec.Body.String())
+		}
+	}
+}
+
+func TestCheckNowUnknownTargetIs404(t *testing.T) {
+	rec := do(t, newTestServer(t, ""), http.MethodPost, "/v1/targets/nope/check", "", bearer())
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", rec.Code)
 	}
 }

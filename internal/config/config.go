@@ -2,6 +2,8 @@ package config
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -60,11 +62,18 @@ type Config struct {
 	Notify           Notify    `yaml:"notify"`
 	Targets          []*Target `yaml:"targets"`
 
+	fingerprint    string
 	byName         map[string]*Target
 	allowFrom      []netip.Prefix
 	trustedProxies []netip.Prefix
 	warnings       []string
 }
+
+// Fingerprint identifies the exact config bytes this was loaded from. The API
+// service and the root agent each load the file once at startup, so comparing
+// fingerprints is how either of them can tell the other is running something
+// older after an edit.
+func (c *Config) Fingerprint() string { return c.fingerprint }
 
 // Warnings are problems that do not stop dup running. A stack directory that is
 // not mounted yet is the motivating case: failing here would gate ExecStartPre
@@ -208,6 +217,9 @@ func load(path string, opt options) (*Config, error) {
 	}
 
 	var c Config
+	sum := sha256.Sum256(raw)
+	c.fingerprint = hex.EncodeToString(sum[:12])
+
 	dec := yaml.NewDecoder(bytes.NewReader(raw))
 	dec.KnownFields(true)
 	if err := dec.Decode(&c); err != nil {

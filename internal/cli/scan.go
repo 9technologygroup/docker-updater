@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -59,7 +60,10 @@ func runScan(args []string) error {
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	_, _ = fmt.Fprintln(w, "STACK\tRESULT\tSERVICES\tDETAIL")
 
-	available, failed := 0, 0
+	available, failed, busy := 0, 0, 0
+	// Clipping an error into a table cell can hide the only copy of it, so the
+	// full text is printed underneath instead.
+	var problems []string
 	// Sequentially: the agent serialises per target and caps concurrency anyway,
 	// and a parallel scan would just queue behind that while pulling in bulk.
 	for _, name := range targets {
@@ -67,10 +71,19 @@ func runScan(args []string) error {
 		err := client.do(ctx, http.MethodPost, "/v1/targets/"+name+"/check", "", &out)
 
 		result, services, detail := "up to date", "-", ""
+		var se *apiStatusError
+		refused := errors.As(err, &se)
+
 		switch {
+		// A target already being checked or updated is not a fault. The agent
+		// serialises per stack, and the scheduler may simply have got there first.
+		case refused && (se.status == http.StatusConflict || se.status == http.StatusServiceUnavailable):
+			busy++
+			result, detail = "busy", "already being checked or updated, try again shortly"
 		case err != nil:
 			failed++
-			result, detail = "check FAILED", clip(err.Error(), 52)
+			result, detail = "check FAILED", "see below"
+			problems = append(problems, name+": "+err.Error())
 		case out.Available:
 			available++
 			result = "update available"
@@ -85,12 +98,21 @@ func runScan(args []string) error {
 		return err
 	}
 
+	for _, p := range problems {
+		fmt.Printf("\n%s\n", p)
+	}
+
 	fmt.Println()
+	if busy > 0 {
+		fmt.Printf("%d %s busy, so nothing was learned about %s. The scheduler checks on its own\n",
+			busy, plural(busy, "stack was", "stacks were"), plural(busy, "it", "them"))
+		fmt.Printf("interval anyway, and dup list shows anything waiting out a soak.\n\n")
+	}
 	switch {
 	case available > 0:
 		fmt.Printf("%d %s an update waiting. Apply one with:\n\n  sudo dup update <stack>\n",
 			available, plural(available, "stack has", "stacks have"))
-	case failed == 0:
+	case failed == 0 && busy == 0:
 		fmt.Printf("Everything is on its latest image.\n")
 	}
 	if failed > 0 {

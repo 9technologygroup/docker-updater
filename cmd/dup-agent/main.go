@@ -75,7 +75,7 @@ func run() error {
 		return err
 	}
 
-	srv := agentd.NewServer(cfg, pipeline.New(docker), log).WithDocker(docker)
+	srv := agentd.NewServer(cfg, pipeline.New(docker), log).WithDocker(docker).WithConfigPath(*configPath)
 	srv.RequirePeerUID(uid)
 
 	if !agentd.PeerCredSupported() {

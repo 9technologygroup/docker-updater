@@ -1,9 +1,12 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"time"
 
+	"github.com/9technologygroup/docker-updater/internal/agent"
 	"github.com/9technologygroup/docker-updater/internal/certs"
 	"github.com/9technologygroup/docker-updater/internal/config"
 )
@@ -62,6 +65,7 @@ func runCheck(args []string) error {
 	}
 
 	printWarnings(cfg)
+	printAgentDrift(cfg)
 	if len(cfg.Targets) == 0 {
 		fmt.Printf("\ndup is not managing anything yet. See what is on this host:\n\n")
 		fmt.Printf("  sudo dup list\n\n")
@@ -84,6 +88,33 @@ func printWarnings(cfg *config.Config) {
 		fmt.Printf("  %s\n", w)
 	}
 	fmt.Printf("\ndup will start, and updates for those stacks will fail until the path is there.\n")
+}
+
+// printAgentDrift is the whole point of running check after an edit: the file can
+// be perfectly valid while the root agent is still running the version it loaded
+// at startup, and until now the only symptom was a bare "unknown target" later.
+func printAgentDrift(cfg *config.Config) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	health, err := agent.NewClient(cfg.AgentSocket).Health(ctx)
+	if err != nil || health.ConfigFingerprint == "" {
+		// Not running, or too old to report. Neither is this command's business.
+		return
+	}
+	if health.ConfigFingerprint == cfg.Fingerprint() {
+		return
+	}
+
+	fmt.Printf("\nThis config does not match the one the update agent is running.\n")
+	fmt.Printf("  on disk        %s\n", cfg.Fingerprint())
+	fmt.Printf("  agent loaded   %s", health.ConfigFingerprint)
+	if !health.ConfigLoadedAt.IsZero() {
+		fmt.Printf(" at %s", health.ConfigLoadedAt.Local().Format("02 Jan 15:04:05"))
+	}
+	fmt.Printf("\n  agent stacks   %s\n", joinOr(health.Targets, "none"))
+	fmt.Printf("\nUpdates will fail for anything the agent has not loaded. Apply it:\n\n")
+	fmt.Printf("  sudo systemctl restart dup-agent dup\n")
 }
 
 func missingCertError(cfg *config.Config, configPath string) error {

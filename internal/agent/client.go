@@ -63,6 +63,31 @@ func (c *Client) Ping(ctx context.Context) error {
 	return nil
 }
 
+// Health reports what config the agent is actually running, so a caller can spot
+// that it predates an edit rather than guessing from an "unknown target".
+func (c *Client) Health(ctx context.Context) (wire.HealthResult, error) {
+	var out wire.HealthResult
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.url(wire.HealthPath), nil)
+	if err != nil {
+		return out, err
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return out, fmt.Errorf("update agent socket %s: %w", c.socket, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBytes))
+	if resp.StatusCode != http.StatusOK {
+		return out, fmt.Errorf("update agent health check returned %d", resp.StatusCode)
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		return out, fmt.Errorf("could not read the agent health response: %w", err)
+	}
+	return out, nil
+}
+
 func (c *Client) Update(ctx context.Context, t *config.Target, req job.Request, sink job.Sink) (job.State, string, error) {
 	payload, err := json.Marshal(wire.ExecRequest{
 		Target: t.Name,
@@ -155,7 +180,7 @@ func (c *Client) Check(ctx context.Context, target string) (wire.CheckResult, er
 
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBytes))
 	if resp.StatusCode != http.StatusOK {
-		return result, fmt.Errorf("the update agent refused the check (%d): %s", resp.StatusCode, agentError(body))
+		return result, &StatusError{Status: resp.StatusCode, Msg: agentError(body)}
 	}
 	if err := json.Unmarshal(body, &result); err != nil {
 		return result, fmt.Errorf("could not read the agent's check result: %w", err)
@@ -185,6 +210,18 @@ func (c *Client) Discover(ctx context.Context) (wire.DiscoverResult, error) {
 		return result, fmt.Errorf("could not read the agent's discovery result: %w", err)
 	}
 	return result, nil
+}
+
+// StatusError carries the agent's own status code. Flattening it into a plain
+// error made the API report a busy target or an unknown one as a 500, which
+// reads as "dup is broken" rather than "try again" or "restart the agent".
+type StatusError struct {
+	Status int
+	Msg    string
+}
+
+func (e *StatusError) Error() string {
+	return fmt.Sprintf("the update agent refused the check (%d): %s", e.Status, e.Msg)
 }
 
 func agentError(body []byte) string {

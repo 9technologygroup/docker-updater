@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/9technologygroup/docker-updater/internal/compose"
 	"github.com/9technologygroup/docker-updater/internal/config"
@@ -36,6 +37,9 @@ type Server struct {
 	log        *slog.Logger
 	allowedUID uint32
 	checkPeer  bool
+
+	configPath   string
+	configLoaded time.Time
 
 	slots chan struct{}
 
@@ -64,6 +68,35 @@ func NewServer(cfg *config.Config, backend job.Backend, log *slog.Logger) *Serve
 func (s *Server) WithDocker(r *compose.Runner) *Server {
 	s.docker = r
 	return s
+}
+
+// WithConfigPath lets the agent notice that the file it loaded at startup has
+// changed since. Without it, a target added to the config but never applied here
+// surfaces only as a bare "unknown target", which reads like a typo.
+func (s *Server) WithConfigPath(path string) *Server {
+	s.configPath = path
+	s.configLoaded = time.Now()
+	return s
+}
+
+// unknownTarget explains itself when the config on disk no longer matches the one
+// this process is running, which is nearly always the real cause.
+func (s *Server) unknownTarget(name string) string {
+	if s.configPath == "" {
+		return "unknown target"
+	}
+	current, err := config.LoadAgent(s.configPath)
+	if err != nil {
+		return "unknown target"
+	}
+	if current.Fingerprint() == s.cfg.Fingerprint() {
+		return fmt.Sprintf("unknown target %q; it is not in %s", clip(name), s.configPath)
+	}
+	if _, ok := current.Target(name); !ok {
+		return fmt.Sprintf("unknown target %q; %s has changed since this agent started but still does not list it", clip(name), s.configPath)
+	}
+	return fmt.Sprintf("target %q was added to %s after this agent started, so the agent has not loaded it yet. "+
+		"Apply it with: sudo systemctl restart dup-agent dup", clip(name), s.configPath)
 }
 
 func PeerCredSupported() bool { return peerCredSupported }
@@ -108,11 +141,18 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST "+wire.ExecPath, s.handleExec)
 	mux.HandleFunc("POST "+wire.CheckPath, s.handleCheck)
 	mux.HandleFunc("GET "+wire.DiscoverPath, s.handleDiscover)
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{"status":"ok"}`)
-	})
+	mux.HandleFunc("GET /healthz", s.handleHealth)
 	return mux
+}
+
+func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(wire.HealthResult{
+		Status:            "ok",
+		ConfigFingerprint: s.cfg.Fingerprint(),
+		ConfigLoadedAt:    s.configLoaded,
+		Targets:           s.cfg.TargetNames(),
+	})
 }
 
 func Listen(path string) (net.Listener, error) {
@@ -165,7 +205,7 @@ func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
 	target, ok := s.cfg.Target(req.Target)
 	if !ok {
 		s.log.Warn("agent rejected unknown target", "target", clip(req.Target))
-		writeError(w, http.StatusNotFound, "unknown target")
+		writeError(w, http.StatusNotFound, s.unknownTarget(req.Target))
 		return
 	}
 	if err := validateTag(target, req.Tag); err != nil {
@@ -241,7 +281,7 @@ func (s *Server) handleCheck(w http.ResponseWriter, r *http.Request) {
 	target, ok := s.cfg.Target(req.Target)
 	if !ok {
 		s.log.Warn("agent rejected unknown target", "target", clip(req.Target))
-		writeError(w, http.StatusNotFound, "unknown target")
+		writeError(w, http.StatusNotFound, s.unknownTarget(req.Target))
 		return
 	}
 
@@ -262,6 +302,7 @@ func (s *Server) handleCheck(w http.ResponseWriter, r *http.Request) {
 
 	result, err := s.checker.Check(r.Context(), target)
 	if err != nil {
+		s.log.Error("check failed", "target", target.Name, "error", err)
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}

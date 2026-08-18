@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/9technologygroup/docker-updater/internal/agent"
 	"github.com/9technologygroup/docker-updater/internal/config"
 	"github.com/9technologygroup/docker-updater/internal/job"
 	"github.com/9technologygroup/docker-updater/internal/selfupdate"
@@ -145,7 +146,20 @@ func (s *Server) handleCheckNow(w http.ResponseWriter, r *http.Request, _ reques
 
 	result, err := s.checkNow(r.Context(), name)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		// Pass the agent's own verdict through. A busy target is 409 and an
+		// unknown one is 404; calling either a 500 sends people hunting for a
+		// fault that is not there.
+		status := http.StatusInternalServerError
+		var se *agent.StatusError
+		if errors.As(err, &se) && se.Status != http.StatusInternalServerError {
+			status = se.Status
+		}
+		if status >= 500 {
+			s.log.Error("check failed", "target", name, "error", err)
+		} else {
+			s.log.Warn("check refused", "target", name, "status", status, "error", err)
+		}
+		writeError(w, status, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{

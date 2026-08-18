@@ -1,6 +1,10 @@
 package wire
 
-import "github.com/9technologygroup/docker-updater/internal/job"
+import (
+	"time"
+
+	"github.com/9technologygroup/docker-updater/internal/job"
+)
 
 const (
 	ExecPath     = "/v1/exec"
@@ -16,6 +20,13 @@ const (
 	EventChanged = "changed"
 	EventResult  = "result"
 )
+
+type HealthResult struct {
+	Status            string    `json:"status"`
+	ConfigFingerprint string    `json:"config_fingerprint,omitempty"`
+	ConfigLoadedAt    time.Time `json:"config_loaded_at,omitempty"`
+	Targets           []string  `json:"targets,omitempty"`
+}
 
 type ExecRequest struct {
 	Target string `json:"target"`
