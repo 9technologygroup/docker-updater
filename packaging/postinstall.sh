@@ -35,6 +35,7 @@ for stale in /usr/local/bin/dup /usr/local/bin/dup-agent; do
     if [ -f "${stale}" ]; then
         rm -f "${stale}"
         echo "removed stale ${stale} from an earlier install"
+        echo "if your shell still says '${stale}: No such file or directory', run: hash -r"
     fi
 done
 
@@ -66,7 +67,7 @@ Next steps, in this order
   1. Copy the reference config and edit it for this host:
        sudo cp /etc/dup/config.example.yml /etc/dup/config.yml
        sudo chown root:dup /etc/dup/config.yml && sudo chmod 0640 /etc/dup/config.yml
-       sudo $EDITOR /etc/dup/config.yml
+       sudo nano /etc/dup/config.yml          # or vim, or whatever you use
 
   2. Only if dup should terminate TLS itself, rather than sit behind a reverse
      proxy on 127.0.0.1. Set 'tls: {self_signed: true}' in the config, then:

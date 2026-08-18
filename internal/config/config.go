@@ -643,7 +643,7 @@ func readConfigError(path string, err error) error {
 			"Create one from the reference that ships with dup:\n\n"+
 			"  sudo cp /etc/dup/config.example.yml %s\n"+
 			"  sudo chown root:dup %s && sudo chmod 0640 %s\n"+
-			"  sudo $EDITOR %s\n\n"+
+			"  sudo nano %s\n\n"+
 			"Then:  sudo dup check", path, path, path, path, path)
 	case errors.Is(err, fs.ErrPermission):
 		return fmt.Errorf("not allowed to read %s.\n\n"+

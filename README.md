@@ -62,7 +62,7 @@ The installer deliberately does **not** create `/etc/dup/config.yml` or start an
 ```sh
 sudo cp /etc/dup/config.example.yml /etc/dup/config.yml
 sudo chown root:dup /etc/dup/config.yml && sudo chmod 0640 /etc/dup/config.yml
-sudo $EDITOR /etc/dup/config.yml
+sudo nano /etc/dup/config.yml   # or vim, or whatever you use
 
 sudo dup cert      # only if you set tls.self_signed, see Exposing the port
 sudo dup check     # the config parses and matches this host

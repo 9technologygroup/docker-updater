@@ -282,12 +282,20 @@ install -m 0755 -o root -g root "${AGENT_SRC}" "${BIN_DIR}/${AGENT_BIN}"
 # Earlier versions of this script installed to /usr/local/bin. Leaving those in
 # place shadows the real binaries on any PATH that prefers /usr/local/bin, so
 # 'dup version' would report one build while the service ran another.
+REMOVED_STALE=no
 for stale in "${LEGACY_BIN_DIR}/${API_BIN}" "${LEGACY_BIN_DIR}/${AGENT_BIN}"; do
     if [ -f "${stale}" ]; then
         rm -f "${stale}"
         log "removed stale ${stale} from an earlier install"
+        REMOVED_STALE=yes
     fi
 done
+
+if [ "${REMOVED_STALE}" = "yes" ]; then
+    warn "Your current shell may still have the old path cached. If the next dup"
+    warn "command says '${LEGACY_BIN_DIR}/dup: No such file or directory', run:"
+    warn "    hash -r"
+fi
 
 log "installing systemd units"
 for unit in "${AGENT_BIN}.service" "${API_BIN}.service"; do
@@ -317,7 +325,7 @@ if [ ! -f "${CONF_FILE}" ]; then
     echo
     echo "       sudo cp ${EXAMPLE_FILE} ${CONF_FILE}"
     echo "       sudo chown root:${SVC_USER} ${CONF_FILE} && sudo chmod 0640 ${CONF_FILE}"
-    echo "       sudo \$EDITOR ${CONF_FILE}"
+    echo "       sudo nano ${CONF_FILE}          # or vim, or whatever you use"
     echo
     echo "  2. If you want dup to terminate TLS itself, set 'tls: {self_signed: true}'"
     echo "     in the config and generate the certificate. Skip this if dup will sit"
