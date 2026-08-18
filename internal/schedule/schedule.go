@@ -35,6 +35,10 @@ type Scheduler struct {
 	starter Starter
 	log     *slog.Logger
 
+	// jitter spreads the first check across hosts. A field rather than a
+	// constant so tests can exercise the loop without waiting it out.
+	jitter time.Duration
+
 	mu        sync.Mutex
 	pending   map[string]Pending
 	nextCheck map[string]time.Time
@@ -47,6 +51,7 @@ func New(cfg *config.Config, checker Checker, starter Starter, log *slog.Logger)
 		checker:   checker,
 		starter:   starter,
 		log:       log,
+		jitter:    startupJitter,
 		pending:   make(map[string]Pending),
 		nextCheck: make(map[string]time.Time),
 		lastCheck: make(map[string]time.Time),
@@ -110,7 +115,10 @@ func (s *Scheduler) Run(ctx context.Context) {
 }
 
 func (s *Scheduler) watch(ctx context.Context, t *config.Target) {
-	delay := time.Duration(rand.Int64N(int64(startupJitter)))
+	var delay time.Duration
+	if s.jitter > 0 {
+		delay = time.Duration(rand.Int64N(int64(s.jitter)))
+	}
 	s.setNext(t.Name, time.Now().Add(delay))
 	select {
 	case <-ctx.Done():
@@ -125,10 +133,33 @@ func (s *Scheduler) watch(ctx context.Context, t *config.Target) {
 		s.setLast(t.Name, time.Now())
 		s.tick(ctx, t)
 		s.setNext(t.Name, time.Now().Add(t.CheckInterval))
+
+		// A soak expiring before the next check needs its own wake-up. Waiting
+		// only on the ticker means an update that finished soaking sits until
+		// the next interval, so a 10m soak under a 1h check_interval applies up
+		// to 50 minutes late.
+		var (
+			soakC     <-chan time.Time
+			soakTimer *time.Timer
+		)
+		if p, ok := s.PendingFor(t.Name); ok {
+			if d := time.Until(p.ReadyAt(t.SoakWindow())); d > 0 {
+				soakTimer = time.NewTimer(d)
+				soakC = soakTimer.C
+			}
+		}
+
 		select {
 		case <-ctx.Done():
+			if soakTimer != nil {
+				soakTimer.Stop()
+			}
 			return
 		case <-ticker.C:
+		case <-soakC:
+		}
+		if soakTimer != nil {
+			soakTimer.Stop()
 		}
 	}
 }
