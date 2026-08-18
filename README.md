@@ -55,14 +55,17 @@ make build-linux
 sudo ./install.sh
 ```
 
-The installer deliberately does **not** create `/etc/dup/config.yml` or start anything. It drops a reference config next to it and tells you what to do. Point it at your stacks:
+Both binaries go to `/usr/bin`, the same place the packages put them.
+
+The installer deliberately does **not** create `/etc/dup/config.yml` or start anything. It drops a reference config next to it and tells you what to do. Point it at your stacks, in this order:
 
 ```sh
 sudo cp /etc/dup/config.example.yml /etc/dup/config.yml
 sudo chown root:dup /etc/dup/config.yml && sudo chmod 0640 /etc/dup/config.yml
 sudo $EDITOR /etc/dup/config.yml
 
-sudo dup check     # config parses and every stack directory exists
+sudo dup cert      # only if you set tls.self_signed, see Exposing the port
+sudo dup check     # the config parses and matches this host
 sudo dup audit     # the dup account cannot rewrite what runs as root
 sudo systemctl enable --now dup-agent dup
 ```
@@ -72,20 +75,36 @@ Then check on it:
 ```sh
 systemctl status dup-agent dup
 journalctl -u dup -u dup-agent -f
-dup list
-dup status
+sudo dup list
+sudo dup status
 ```
+
+`/etc/dup/config.yml` is `root:dup 0640`, so these read it as root. To run them as
+yourself, join the group once: `sudo usermod -aG dup $USER`, then log out and back in.
 
 ### Upgrading
 
-Re-run the installer, or `apt install --only-upgrade dup`. Either replaces both binaries and leaves `/etc/dup/config.yml`, the bearer token and the GitHub secret alone. The config check and the ownership audit both run before anything is started, so a bad upgrade stops rather than half-applying.
+`dup version` tells you when there is a newer release:
+
+```
+$ dup version
+dup v1.3.0 (4b81de7)
+a newer dup is available: v1.4.0 (you have v1.3.0)
+  upgrade:  curl -fsSL https://raw.githubusercontent.com/9technologygroup/docker-updater/main/install.sh | sudo sh
+  notes:    https://github.com/9technologygroup/docker-updater/releases/tag/v1.4.0
+```
+
+The version itself goes to stdout and the advisory to stderr, so `dup version` stays safe to capture in a script. The running service checks once at startup and daily after that, logging `a newer dup is available`, and `GET /v1/version` reports the same thing from cache. Set `DUP_NO_UPDATE_CHECK=1` to switch all of it off, `dup version --check` to check right now, and `DUP_GITHUB_TOKEN` if a shared egress address runs into the unauthenticated rate limit.
+
+To upgrade, re-run the installer or `apt install --only-upgrade dup`. Either replaces both binaries and leaves `/etc/dup/config.yml`, the bearer token and the GitHub secret alone.
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/9technologygroup/docker-updater/main/install.sh | sudo sh
-dup version
 ```
 
-Pin a specific version with `DUP_VERSION=v1.2.3` in front of the installer.
+The installer validates your existing config **with the new binary before replacing anything**, so a config the new version rejects leaves the old one running rather than half-applying. Pin a specific version with `DUP_VERSION=v1.2.3` in front of it.
+
+There is deliberately no `dup upgrade`. The binaries are `root:root` and the service runs unprivileged, so self-replacement would either need root in the agent or break the privilege split, and a tool built on health checks and rollback should not swap itself out with a mechanism that has neither.
 
 ## Commands
 
@@ -93,15 +112,17 @@ Pin a specific version with `DUP_VERSION=v1.2.3` in front of the installer.
 |---|---|
 | `dup list` | Stacks, their update policy, and every compose project or container on the host that dup is **not** covering |
 | `dup status [stack]` | Recent update jobs, newest first |
-| `dup update <stack>` | Trigger an update. `--tag`, `--dry-run`, `--force`, `--reason`, `--wait` |
+| `dup update <stack>` | Trigger an update. `--tag`, `--dry-run`, `--force`, `--reason`, `--wait`. `--dry-run` pulls and reports what would change without recreating anything |
 | `dup check` | Validate the config |
 | `dup audit` | Verify the service account cannot rewrite what runs as root |
 | `dup cert` | Generate the self-signed TLS certificate (run as root) |
-| `dup version` | Version and commit. `--full` adds build date, toolchain, licence and source |
+| `dup version` | Version and commit, and whether a newer release is out. `--full` adds build date, toolchain, licence, source and the latest release. `--check` forces a check, `--no-check` skips it |
 | `dup serve` | The unprivileged HTTP API (systemd runs this) |
 | `dup-agent` | The privileged agent (systemd runs this) |
 
-`dup list` is the one to reach for first. It answers "what is dup responsible for, and what is quietly drifting outside it".
+Flags and the stack name work in either order, so `dup update --dry-run web` and `dup update web --dry-run` do the same thing.
+
+`dup list` is the one to reach for first. It answers "what is dup responsible for, what is waiting to apply, and what is quietly drifting outside it".
 
 ## Exposing the port
 
@@ -122,9 +143,11 @@ dup cert            # generates and persists a self-signed cert, prints the SHA-
 dup cert --force    # replaces it
 ```
 
-`dup cert` refuses to overwrite an existing certificate unless you pass `--force`, and it will not touch a certificate you manage yourself (`self_signed: false`). Run it as root so the key lands `root:dup 0640`; the installer runs it for you when `self_signed: true`.
+`dup cert` must be run as root, and refuses before writing anything if it is not, so the key always lands `root:dup 0640` where the service can read it. It will not overwrite an existing certificate unless you pass `--force`, and it will not touch a certificate you manage yourself (`self_signed: false`). The installer runs it for you on upgrade when `self_signed: true`.
 
-Self-signed means clients will not trust it until told to. Pin the printed fingerprint, or import the cert, rather than disabling verification globally in n8n.
+The generated certificate is a plain server certificate, not a CA, so importing it cannot be used to vouch for any other name. `dup update` and `dup status` trust it automatically by reading `cert_file`, with verification left on.
+
+Self-signed means other clients will not trust it until told to. Pin the printed fingerprint, or import the cert, rather than disabling verification globally in n8n.
 
 There is deliberately no ACME support. It would need port 80 reachable or DNS API credentials on every host, and that is a larger blast radius than the problem justifies.
 
@@ -223,7 +246,7 @@ Nothing that decides what runs as root may be writable by the service account.
 
 | Path | Owner | Mode |
 |---|---|---|
-| `/usr/local/bin/dup`, `/usr/local/bin/dup-agent` | `root:root` | `0755` |
+| `/usr/bin/dup`, `/usr/bin/dup-agent` | `root:root` | `0755` |
 | `/etc/dup/` | `root:dup` | `0750` |
 | `/etc/dup/config.yml` | `root:dup` | `0640` |
 | `bearer.token`, `github.secret` | `root:dup` | `0640` |

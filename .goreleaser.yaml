@@ -111,6 +111,10 @@ nfpms:
         type: config
       - src: deploy/config.example.yml
         dst: /etc/dup/config.example.yml
+      - dst: /var/lib/dup
+        type: dir
+        file_info:
+          mode: 0755
     overrides:
       rpm:
         dependencies:
@@ -152,5 +156,12 @@ release:
     ## Upgrading
 
     Re-running the installer or the package manager replaces both binaries and
-    keeps `/etc/dup/config.yml`, the bearer token and the GitHub secret. The
-    ownership audit runs before either service is started.
+    keeps `/etc/dup/config.yml`, the bearer token and the GitHub secret.
+
+    The installer validates your existing config with the new binary *before*
+    replacing anything, so a config that no longer passes leaves the running
+    version in place rather than half-applying. Both binaries live in
+    `/usr/bin`, the same place the packages put them.
+
+    `dup version` tells you when a newer release is out. Set
+    `DUP_NO_UPDATE_CHECK=1` to switch that off.

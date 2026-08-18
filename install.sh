@@ -6,16 +6,20 @@ GITHUB_REPO="${DUP_GITHUB_REPO:-9technologygroup/docker-updater}"
 SVC_USER="dup"
 API_BIN="dup"
 AGENT_BIN="dup-agent"
-BIN_DIR="/usr/local/bin"
+BIN_DIR="/usr/bin"
+LEGACY_BIN_DIR="/usr/local/bin"
 CONF_DIR="/etc/dup"
 CONF_FILE="${CONF_DIR}/config.yml"
 TOKEN_FILE="${CONF_DIR}/bearer.token"
 GH_SECRET_FILE="${CONF_DIR}/github.secret"
 UNIT_DIR="/etc/systemd/system"
+PKG_UNIT_DIR="/lib/systemd/system"
+STATE_DIR="/var/lib/dup"
 
 SRC_DIR="$(cd "$(dirname "$0")" 2>/dev/null && pwd || echo .)"
 DOWNLOAD_DIR=""
 BUILD_DIR=""
+SECRETS_GENERATED=no
 
 log()  { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m!!\033[0m %s\n' "$*" >&2; }
@@ -26,6 +30,8 @@ cleanup() {
     if [ -n "${BUILD_DIR}" ]; then rm -rf "${BUILD_DIR}"; fi
 }
 trap cleanup EXIT
+
+# ---------------------------------------------------------------- preflight
 
 [ "$(id -u)" -eq 0 ] || die "run this as root (it creates a service account and installs systemd units)"
 command -v systemctl >/dev/null 2>&1 || die "systemd is required"
@@ -39,6 +45,8 @@ case "$(uname -m)" in
     i386|i486|i586|i686|x86) ARCH=386 ;;
     *) die "unsupported architecture: $(uname -m)" ;;
 esac
+
+# ------------------------------------------------------------ obtain binaries
 
 resolve_binary() {
     for rb_candidate in \
@@ -77,15 +85,14 @@ verify_checksum() {
     # busybox sha256sum has no --ignore-missing, so compare the one line we care about.
     vc_expected="$(grep " \{1,\}\*\{0,1\}$2\$" "$1" 2>/dev/null | awk '{print $1}' | head -1)"
     if [ -z "${vc_expected}" ]; then
-        warn "no checksum listed for $2, skipping verification"
-        return 0
+        die "no checksum listed for $2 in checksums.txt; refusing to install an unverified binary"
     fi
     vc_actual="$(sha256sum "$2" | awk '{print $1}')"
     if [ "${vc_expected}" != "${vc_actual}" ]; then
         warn "checksum MISMATCH for $2"
         warn "  expected ${vc_expected}"
         warn "  actual   ${vc_actual}"
-        return 1
+        die "refusing to install a download that does not match its checksum"
     fi
     log "checksum verified" >&2
 }
@@ -111,15 +118,13 @@ download_release() {
     log "downloading dup ${dr_version} (${ARCH})" >&2
     fetch "${dr_base}/${dr_tarball}" "${DOWNLOAD_DIR}/${dr_tarball}" || return 1
 
-    if fetch "${dr_base}/checksums.txt" "${DOWNLOAD_DIR}/checksums.txt" 2>/dev/null; then
-        if command -v sha256sum >/dev/null 2>&1; then
-            ( cd "${DOWNLOAD_DIR}" && verify_checksum checksums.txt "${dr_tarball}" ) || return 1
-        else
-            warn "sha256sum not available, skipping checksum verification"
-        fi
-    else
-        warn "could not fetch checksums.txt, skipping verification"
-    fi
+    # A download that cannot be verified is not installed. This script is piped
+    # straight into a root shell; a silent "skipping verification" is not a
+    # trade-off worth offering.
+    command -v sha256sum >/dev/null 2>&1 || die "sha256sum is required to verify the download"
+    fetch "${dr_base}/checksums.txt" "${DOWNLOAD_DIR}/checksums.txt" 2>/dev/null \
+        || die "could not fetch checksums.txt from ${dr_base}"
+    ( cd "${DOWNLOAD_DIR}" && verify_checksum checksums.txt "${dr_tarball}" ) || exit 1
 
     tar -xzf "${DOWNLOAD_DIR}/${dr_tarball}" -C "${DOWNLOAD_DIR}" || return 1
     SRC_DIR="${DOWNLOAD_DIR}"
@@ -169,16 +174,26 @@ if [ -z "${API_SRC}" ] || [ -z "${AGENT_SRC}" ]; then
     fi
 fi
 
-gen_secret() {
-    if command -v openssl >/dev/null 2>&1; then
-        openssl rand -hex 32
-    else
-        head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n'
-    fi
-}
+# Everything this script installs must be present before anything is written.
+# Discovering a missing unit file after the binaries are in place leaves a host
+# with a new dup and no way to run it.
+for required in deploy/config.example.yml "deploy/${API_BIN}.service" "deploy/${AGENT_BIN}.service"; do
+    [ -f "${SRC_DIR}/${required}" ] || die "${required} not found next to this script; the download or checkout is incomplete"
+done
+
+chmod 0755 "${API_SRC}" "${AGENT_SRC}" 2>/dev/null || true
+
+# ------------------------------------------------------------- install state
 
 UPGRADE=no
-if [ -f "${BIN_DIR}/${API_BIN}" ]; then UPGRADE=yes; fi
+if [ -x "${BIN_DIR}/${API_BIN}" ] || [ -x "${LEGACY_BIN_DIR}/${API_BIN}" ]; then UPGRADE=yes; fi
+
+if [ -f "${PKG_UNIT_DIR}/${API_BIN}.service" ]; then
+    warn "dup is also installed from a package (${PKG_UNIT_DIR}/${API_BIN}.service exists)."
+    warn "This installer writes units to ${UNIT_DIR}, which take precedence over the"
+    warn "package's. Both now run ${BIN_DIR}/dup, so upgrades either way work, but"
+    warn "consider picking one route: 'apt install --only-upgrade dup' or this script."
+fi
 
 if id -u "${SVC_USER}" >/dev/null 2>&1; then
     log "service account ${SVC_USER} already exists"
@@ -197,12 +212,9 @@ if id -nG "${SVC_USER}" | tr ' ' '\n' | grep -qx docker; then
     warn "    gpasswd -d ${SVC_USER} docker && systemctl restart ${API_BIN}"
 fi
 
-log "installing binaries to ${BIN_DIR}"
-install -m 0755 -o root -g root "${API_SRC}"   "${BIN_DIR}/${API_BIN}"
-install -m 0755 -o root -g root "${AGENT_SRC}" "${BIN_DIR}/${AGENT_BIN}"
-
 log "preparing ${CONF_DIR}"
 install -d -m 0750 -o root -g "${SVC_USER}" "${CONF_DIR}"
+install -d -m 0755 -o "${SVC_USER}" -g "${SVC_USER}" "${STATE_DIR}"
 
 install_secret() {
     if [ -f "$1" ]; then
@@ -210,30 +222,82 @@ install_secret() {
     else
         ( umask 077 && gen_secret > "$1" )
         log "generated $2"
+        SECRETS_GENERATED=yes
     fi
     chown root:"${SVC_USER}" "$1"
     chmod 0640 "$1"
+}
+
+gen_secret() {
+    if command -v openssl >/dev/null 2>&1; then
+        openssl rand -hex 32
+    else
+        head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n'
+    fi
 }
 
 install_secret "${TOKEN_FILE}" "bearer token"
 install_secret "${GH_SECRET_FILE}" "github webhook secret"
 
 EXAMPLE_FILE="${CONF_DIR}/config.example.yml"
-[ -f "${SRC_DIR}/deploy/config.example.yml" ] || die "deploy/config.example.yml not found next to this script"
 install -m 0640 -o root -g "${SVC_USER}" "${SRC_DIR}/deploy/config.example.yml" "${EXAMPLE_FILE}"
 log "installed reference config to ${EXAMPLE_FILE}"
 
+# ------------------------------------------------- validate before installing
+
+# The new binary validates the existing config while the old one is still in
+# place. A config that does not pass must not leave a replaced binary on disk,
+# because the next restart or reboot would pick it up.
+if [ -f "${CONF_FILE}" ]; then
+    log "validating ${CONF_FILE} with the new binary before replacing anything"
+
+    if grep -qE '^[[:space:]]*self_signed:[[:space:]]*true' "${CONF_FILE}"; then
+        "${API_SRC}" cert --config "${CONF_FILE}" || exit 1
+    fi
+
+    if ! "${API_SRC}" check --config "${CONF_FILE}"; then
+        echo >&2
+        warn "The config did not validate, so nothing has been changed."
+        warn "The installed binaries and the running services are untouched."
+        warn "Fix the problems above and re-run this installer."
+        exit 1
+    fi
+
+    if ! "${API_SRC}" audit --config "${CONF_FILE}"; then
+        echo >&2
+        warn "REFUSING TO INSTALL."
+        warn "The ${SVC_USER} account can write files that decide what the root agent runs,"
+        warn "so the privilege split would be decoration. Fix the paths listed above."
+        warn "Typically:  sudo chown -R root:root <stack dir> && sudo chmod -R go-w <stack dir>"
+        exit 1
+    fi
+fi
+
+# --------------------------------------------------------------- install
+
+log "installing binaries to ${BIN_DIR}"
+install -m 0755 -o root -g root "${API_SRC}"   "${BIN_DIR}/${API_BIN}"
+install -m 0755 -o root -g root "${AGENT_SRC}" "${BIN_DIR}/${AGENT_BIN}"
+
+# Earlier versions of this script installed to /usr/local/bin. Leaving those in
+# place shadows the real binaries on any PATH that prefers /usr/local/bin, so
+# 'dup version' would report one build while the service ran another.
+for stale in "${LEGACY_BIN_DIR}/${API_BIN}" "${LEGACY_BIN_DIR}/${AGENT_BIN}"; do
+    if [ -f "${stale}" ]; then
+        rm -f "${stale}"
+        log "removed stale ${stale} from an earlier install"
+    fi
+done
+
 log "installing systemd units"
 for unit in "${AGENT_BIN}.service" "${API_BIN}.service"; do
-    [ -f "${SRC_DIR}/deploy/${unit}" ] || die "deploy/${unit} not found next to this script"
-    # Units ship with /usr/bin so the deb and rpm are correct; this install uses BIN_DIR.
-    sed "s|/usr/bin/dup|${BIN_DIR}/dup|g" "${SRC_DIR}/deploy/${unit}" > "${UNIT_DIR}/${unit}"
-    chown root:root "${UNIT_DIR}/${unit}"
-    chmod 0644 "${UNIT_DIR}/${unit}"
+    install -m 0644 -o root -g root "${SRC_DIR}/deploy/${unit}" "${UNIT_DIR}/${unit}"
 done
 systemctl daemon-reload
 
-DUP_VER="$("${BIN_DIR}/${API_BIN}" version 2>/dev/null || echo dup)"
+DUP_VER="$(DUP_NO_UPDATE_CHECK=1 "${BIN_DIR}/${API_BIN}" version 2>/dev/null || echo dup)"
+
+# ------------------------------------------------------- fresh install, no config
 
 if [ ! -f "${CONF_FILE}" ]; then
     echo
@@ -246,7 +310,7 @@ if [ ! -f "${CONF_FILE}" ]; then
     echo "  bearer token  ${TOKEN_FILE}"
     echo "  github secret ${GH_SECRET_FILE}"
     echo
-    echo "Next steps"
+    echo "Next steps, in this order"
     echo
     echo "  1. Copy the reference config and edit it so the stacks match this host."
     echo "     Every stack needs a name and the directory its compose file lives in."
@@ -255,24 +319,32 @@ if [ ! -f "${CONF_FILE}" ]; then
     echo "       sudo chown root:${SVC_USER} ${CONF_FILE} && sudo chmod 0640 ${CONF_FILE}"
     echo "       sudo \$EDITOR ${CONF_FILE}"
     echo
-    echo "  2. Check the config parses and every stack directory exists."
+    echo "  2. If you want dup to terminate TLS itself, set 'tls: {self_signed: true}'"
+    echo "     in the config and generate the certificate. Skip this if dup will sit"
+    echo "     behind a reverse proxy on 127.0.0.1."
+    echo
+    echo "       sudo ${API_BIN} cert"
+    echo
+    echo "  3. Check the config parses and matches this host."
     echo
     echo "       sudo ${API_BIN} check"
     echo
-    echo "  3. Prove the ${SVC_USER} account cannot rewrite anything that runs as root."
+    echo "  4. Prove the ${SVC_USER} account cannot rewrite anything that runs as root."
     echo "     This must pass, or the privilege split buys you nothing."
     echo
     echo "       sudo ${API_BIN} audit"
     echo
-    echo "  4. Start it."
+    echo "  5. Start it."
     echo
     echo "       sudo systemctl enable --now ${AGENT_BIN} ${API_BIN}"
     echo
-    echo "  5. Confirm it is up."
+    echo "  6. Confirm it is up."
     echo
     echo "       systemctl status ${AGENT_BIN} ${API_BIN}"
     echo "       ${API_BIN} list"
-    echo "       journalctl -u ${API_BIN} -u ${AGENT_BIN} -f"
+    echo
+    echo "  bearer token   $(cat "${TOKEN_FILE}")"
+    echo "  github secret  $(cat "${GH_SECRET_FILE}")"
     echo
     echo "  Re-running this installer later upgrades the binaries and leaves your"
     echo "  config and secrets untouched."
@@ -280,39 +352,32 @@ if [ ! -f "${CONF_FILE}" ]; then
     exit 0
 fi
 
-log "found ${CONF_FILE}, validating before restarting"
+# ----------------------------------------------------------------- start
 
-if grep -qE '^[[:space:]]*self_signed:[[:space:]]*true' "${CONF_FILE}"; then
-    log "ensuring the self-signed certificate exists"
-    "${BIN_DIR}/${API_BIN}" cert --config "${CONF_FILE}" || die "could not create the TLS certificate"
-fi
-
-if ! "${BIN_DIR}/${API_BIN}" check --config "${CONF_FILE}"; then
-    echo >&2
-    warn "The config did not validate, so nothing was restarted."
-    warn "The previously running version, if any, is untouched."
-    warn "Fix the problems above and re-run:  sudo ${API_BIN} check"
-    exit 1
-fi
-
-if ! "${BIN_DIR}/${API_BIN}" audit --config "${CONF_FILE}"; then
-    echo >&2
-    warn "REFUSING TO START."
-    warn "The ${SVC_USER} account can write files that decide what the root agent runs,"
-    warn "so the privilege split would be decoration. Fix the paths listed above."
-    warn "Typically:  sudo chown -R root:root <stack dir> && sudo chmod -R go-w <stack dir>"
-    exit 1
-fi
+wait_active() {
+    wa_unit="$1"
+    wa_deadline=$(( $(date +%s) + 30 ))
+    while [ "$(date +%s)" -lt "${wa_deadline}" ]; do
+        if systemctl is-active --quiet "${wa_unit}"; then
+            return 0
+        fi
+        if systemctl is-failed --quiet "${wa_unit}"; then
+            return 1
+        fi
+        sleep 1
+    done
+    systemctl is-active --quiet "${wa_unit}"
+}
 
 log "enabling and starting services"
-systemctl enable "${AGENT_BIN}" "${API_BIN}" >/dev/null 2>&1 || true
-systemctl restart "${AGENT_BIN}"
-sleep 1
-systemctl restart "${API_BIN}"
-sleep 2
+systemctl enable "${AGENT_BIN}" "${API_BIN}" >/dev/null || die "could not enable the units"
 
+# The agent owns the socket the API talks to, so it comes up first. Its
+# ExecStartPre runs check and audit over every stack directory, which is not
+# instant on a host with many stacks, so wait for readiness rather than guess.
 for unit in "${AGENT_BIN}" "${API_BIN}"; do
-    if ! systemctl is-active --quiet "${unit}"; then
+    systemctl restart "${unit}"
+    if ! wait_active "${unit}"; then
         warn "${unit} failed to start, recent logs:"
         journalctl -u "${unit}" -n 30 --no-pager >&2 || true
         exit 1
@@ -345,19 +410,19 @@ echo "  systemctl status ${AGENT_BIN} ${API_BIN}"
 echo "  journalctl -u ${API_BIN} -u ${AGENT_BIN} -f"
 echo "  ${API_BIN} list                 stacks, update policy, and what is not covered"
 echo "  ${API_BIN} status               recent update jobs"
-echo "  ${API_BIN} version --full       version, commit, licence, source"
+echo "  ${API_BIN} version --full       version, latest release, licence, source"
 echo
 echo "Try an update without changing anything"
 echo
 echo "  sudo ${API_BIN} update <stack> --dry-run"
 echo
-if [ "${UPGRADE}" = "yes" ]; then
+if [ "${SECRETS_GENERATED}" = "yes" ]; then
+    echo "  bearer token   $(cat "${TOKEN_FILE}")"
+    echo "  github secret  $(cat "${GH_SECRET_FILE}")"
+else
     echo "  Secrets were left alone. Read them with:"
     echo "    sudo cat ${TOKEN_FILE}"
     echo "    sudo cat ${GH_SECRET_FILE}"
-else
-    echo "  bearer token   $(cat "${TOKEN_FILE}")"
-    echo "  github secret  $(cat "${GH_SECRET_FILE}")"
 fi
 echo
 if [ "${SCHEME}" = "https" ]; then

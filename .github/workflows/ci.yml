@@ -102,6 +102,17 @@ jobs:
           done
           echo "cmd/dup links no docker-calling package"
 
+      # The root agent must not make outbound network calls. The update checker
+      # is for the unprivileged half only; reaching api.github.com as root is
+      # attack surface for a feature nobody reads from the agent.
+      - name: dup-agent must not link the update checker
+        run: |
+          if go list -deps ./cmd/dup-agent | grep -qx "github.com/9technologygroup/docker-updater/internal/selfupdate"; then
+            echo "cmd/dup-agent links internal/selfupdate, which makes outbound network calls as root"
+            exit 1
+          fi
+          echo "cmd/dup-agent links no update checker"
+
   crosscheck:
     name: Cross-compile
     runs-on: ubuntu-latest
