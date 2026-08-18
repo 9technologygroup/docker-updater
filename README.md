@@ -422,6 +422,52 @@ targets:
 
 Two directory-level rules worth knowing. `dir` must be absolute, and no two stacks may share a directory basename, because compose derives the project name from it and updating one would stop the other's containers. Both are refused at config load.
 
+### Private registries
+
+`sudo docker login` and you are done. Nothing in dup needs configuring.
+
+```bash
+sudo docker login ghcr.io
+sudo docker login registry.example.com
+```
+
+**As root, not as yourself.** The agent runs as root, so it reads
+`/root/.docker/config.json`. Logging in as your normal user writes the credentials
+somewhere the agent never looks, and pulls keep failing with an error that says nothing
+about credentials.
+
+Three parts of the design make this work, and are worth knowing before anyone "hardens"
+them into a broken state:
+
+- `HOME` and `DOCKER_CONFIG` are passed through to the docker CLI. The child environment is
+  an explicit allowlist, so anything not on it is dropped.
+- `ProtectHome=read-only` on the agent unit, rather than `true`, is what lets it read
+  `/root/.docker`. This is already called out in the hardening notes.
+- `ProtectSystem=full` leaves `/usr` readable and executable, so credential helper binaries
+  still run.
+
+Two things that do not work, both for the same reason:
+
+**Credential helpers needing a desktop session.** `pass` and `secretservice` want an
+unlocked keyring and a DBus session. A systemd service has neither, so pulls fail even
+though `docker pull` works fine in your shell. Use a plain `config.json`, or a helper that
+authenticates from instance metadata such as `docker-credential-ecr-login`.
+
+**Logging in through dup.** `ProtectHome=read-only` means the agent cannot write
+`/root/.docker`, deliberately. Run `docker login` yourself; dup only ever reads.
+
+To keep credentials somewhere else, set `DOCKER_CONFIG` in the agent's environment rather
+than in your shell, since the agent does not inherit your session:
+
+```ini
+# /etc/systemd/system/dup-agent.service.d/registry.conf
+[Service]
+Environment=DOCKER_CONFIG=/etc/dup/docker
+```
+
+Worth doing even for public images: an authenticated Docker Hub pull gets a much higher
+rate limit than an anonymous one, and `auto_update` pulls on every `check_interval`.
+
 ### Backups before an update
 
 dup does not back up your volumes, and that is deliberate. A `tar` of a running Postgres volume is a torn copy that restores into a corrupt database while telling you that you are covered. Nothing in dup will ever create that file and call it a backup.
