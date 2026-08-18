@@ -81,8 +81,10 @@ targets: []
 #     env_file: .env                 # optional, bare filename inside dir
 #     services: [web, worker]        # optional, default: every service in the stack
 #
-#     auto_update: true              # optional, default false. Poll and update
-#                                    #   without being asked
+#     auto_update: true              # optional, default false. Poll and update on
+#                                    #   a schedule. Off means dup never polls this
+#                                    #   stack and never notices a new image; it
+#                                    #   only acts when you or a webhook trigger it
 #     check_interval: 6h             # optional, default 6h, minimum 1m. Only used
 #                                    #   when auto_update is true
 #     soak: 30m                      # optional, default 30m. How long a new image
