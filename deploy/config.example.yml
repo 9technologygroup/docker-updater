@@ -4,17 +4,19 @@ log_level: info
 agent_socket: /run/dup/agent.sock
 agent_peer_user: dup
 
-# On by default. The installer generates the pair below before you get here, so
-# copying this file is all it takes to have dup serve HTTPS.
-#   cert /etc/dup/self-signed.crt
-#   key  /etc/dup/self-signed.key
-# Leave cert_file and key_file empty to use those. Set self_signed: false to
-# turn TLS off entirely, or point cert_file and key_file at a certificate you
-# manage yourself, in which case dup will never overwrite it.
+# HTTPS is on by default. The installer generates the pair below before you get
+# here, so copying this file is all it takes.
+#
+#   enabled: false      serve plain HTTP, for a reverse proxy that already
+#                       terminates TLS in front of 127.0.0.1
+#   self_signed: true   dup generates and may replace the pair below
+#   self_signed: false  the certificate is yours, dup will never overwrite it;
+#                       point cert_file and key_file at it
 tls:
+  enabled: true
   self_signed: true
-  cert_file: ""
-  key_file: ""
+  cert_file: /etc/dup/self-signed.crt
+  key_file: /etc/dup/self-signed.key
   hosts: []
 
 allow_from: []

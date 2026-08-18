@@ -44,7 +44,7 @@ func (e *apiStatusError) Error() string {
 // never a name in the certificate.
 func clientBase(cfg *config.Config) string {
 	scheme := "http"
-	if cfg.TLS.Enabled() {
+	if cfg.TLS.IsEnabled() {
 		scheme = "https"
 	}
 	host, port, err := net.SplitHostPort(cfg.Listen)
@@ -66,7 +66,7 @@ func newAPIClient(cfg *config.Config) (*apiClient, error) {
 	}
 
 	httpClient := &http.Client{Timeout: 6 * time.Minute}
-	if cfg.TLS.Enabled() {
+	if cfg.TLS.IsEnabled() {
 		tlsConfig, err := clientTLS(cfg)
 		if err != nil {
 			return nil, err

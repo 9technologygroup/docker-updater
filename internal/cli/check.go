@@ -26,7 +26,7 @@ func runCheck(args []string) error {
 	if err := checkListen(cfg); err != nil {
 		return err
 	}
-	if cfg.TLS.Enabled() && !certs.Exists(cfg.TLS.CertFile, cfg.TLS.KeyFile) {
+	if cfg.TLS.IsEnabled() && !certs.Exists(cfg.TLS.CertFile, cfg.TLS.KeyFile) {
 		return missingCertError(cfg, *configPath)
 	}
 

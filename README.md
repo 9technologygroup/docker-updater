@@ -83,9 +83,26 @@ yourself, join the group once: `sudo usermod -aG dup $USER`, then log out and ba
 
 **TLS is on out of the box.** The installer generates `/etc/dup/self-signed.crt` and
 `/etc/dup/self-signed.key` before you copy the reference config, and that config ships
-with `self_signed: true`, so dup serves HTTPS from the first start with nothing to edit.
-An upgrade never regenerates or replaces a certificate that already exists. To turn TLS
-off, set `self_signed: false` under `tls`.
+with TLS enabled and those paths already filled in, so dup serves HTTPS from the first
+start with nothing to edit. An upgrade never regenerates or replaces a certificate that
+already exists.
+
+```yaml
+tls:
+  enabled: true
+  self_signed: true
+  cert_file: /etc/dup/self-signed.crt
+  key_file: /etc/dup/self-signed.key
+```
+
+| Setting | Effect |
+|---|---|
+| `enabled: false` | Plain HTTP, whatever the other fields say. For a reverse proxy that already terminates TLS in front of `127.0.0.1` |
+| `self_signed: true` | dup generates the pair, and `dup cert --force` may replace it |
+| `self_signed: false` | The certificate is yours. dup will never overwrite it; point `cert_file` and `key_file` at it |
+
+`enabled` is what decides it. Leave it out and TLS is inferred from the rest of the
+block, which is how configs written before it existed behave.
 
 ### Upgrading
 
@@ -111,6 +128,26 @@ The installer validates your existing config **with the new binary before replac
 
 There is deliberately no `dup upgrade`. The binaries are `root:root` and the service runs unprivileged, so self-replacement would either need root in the agent or break the privilege split, and a tool built on health checks and rollback should not swap itself out with a mechanism that has neither.
 
+### Uninstalling
+
+```sh
+sudo ./install.sh --uninstall            # stop and remove dup, keep /etc/dup
+sudo ./install.sh --uninstall --purge    # also remove /etc/dup and the dup account
+```
+
+Without `--purge` the config, both secrets and the TLS certificate survive, so reinstalling
+picks up where you left off. `--purge` deletes them.
+
+It asks before doing anything. Add `-y` to skip that, which is also required when running
+it non-interactively, so a piped invocation cannot silently wipe a host.
+
+If dup came from a `.deb` or `.rpm` the script refuses and points you at the package
+manager, because removing the files behind its back leaves the package database describing
+files that are no longer there. `--force` overrides that.
+
+**Your compose stacks are not touched.** Whatever dup was updating keeps running; only dup
+itself is removed.
+
 ## Commands
 
 | Command | What it does |
@@ -135,8 +172,8 @@ Three options. dup does not care which you pick, but it will not serve plaintext
 
 | Option | When | Config |
 |---|---|---|
-| **dup terminates TLS itself** (default) | Always, unless you have a reason not to. dup manages the proxy's own stack, or you do not want a proxy in the path at all | `tls.self_signed: true`, which is what the reference config ships with. Or point `tls.cert_file`/`key_file` at a wildcard you already have |
-| **Loopback + reverse proxy** | You already run NPM, Caddy or Traefik and would rather it held the certificate | `listen: "127.0.0.1:7788"` and `tls.self_signed: false` |
+| **dup terminates TLS itself** (default) | Always, unless you have a reason not to. dup manages the proxy's own stack, or you do not want a proxy in the path at all | What the reference config ships with. Or point `tls.cert_file`/`key_file` at a wildcard you already have and set `self_signed: false` |
+| **Loopback + reverse proxy** | You already run NPM, Caddy or Traefik and would rather it held the certificate | `listen: "127.0.0.1:7788"` and `tls.enabled: false` |
 | **Plaintext on the network** | Never, unless something else is doing the encrypting | `allow_non_loopback: true`, and dup will complain in the log |
 
 If you put a reverse proxy in front while dup is still terminating TLS, the proxy talks
