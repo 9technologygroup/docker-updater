@@ -207,3 +207,65 @@ func TestRunReturnsImmediatelyWithNoAutoTargets(t *testing.T) {
 		t.Fatal("Run should return at once when nothing is on auto update")
 	}
 }
+
+// The bug this guards: the soak was only ever tested when the ticker fired, so
+// a short soak under a long check_interval applied at the next interval instead
+// of when it was due. On a live host a 10m soak under a 1h interval sat for
+// nearly an hour past its stated apply time.
+func TestSoakAppliesWithoutWaitingForTheNextCheck(t *testing.T) {
+	checker := &fakeChecker{result: wire.CheckResult{Available: true, Changed: []string{"app"}}}
+	starter := &fakeStarter{}
+	s, target := newScheduler(t, 150*time.Millisecond, checker, starter)
+
+	// An interval far longer than the soak, mirroring check_interval: 1h with
+	// soak: 10m. If the update waits for the ticker, this test times out.
+	target.CheckInterval = time.Hour
+	s.jitter = 0
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		s.watch(ctx, target)
+	}()
+
+	deadline := time.Now().Add(4 * time.Second)
+	for time.Now().Before(deadline) {
+		if starter.count() > 0 {
+			cancel()
+			<-done
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	cancel()
+	<-done
+	t.Fatalf("the update never applied; it waited for the next check_interval rather than the soak")
+}
+
+// The soak must still be honoured: applying early is as wrong as applying late.
+func TestSoakIsNotSkipped(t *testing.T) {
+	checker := &fakeChecker{result: wire.CheckResult{Available: true, Changed: []string{"app"}}}
+	starter := &fakeStarter{}
+	s, target := newScheduler(t, 30*time.Second, checker, starter)
+	target.CheckInterval = time.Hour
+	s.jitter = 0
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		s.watch(ctx, target)
+	}()
+
+	time.Sleep(300 * time.Millisecond)
+	got := starter.count()
+	cancel()
+	<-done
+
+	if got != 0 {
+		t.Errorf("applied %d times while still soaking, want 0", got)
+	}
+}
