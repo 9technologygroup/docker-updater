@@ -323,7 +323,29 @@ Nothing that decides what runs as root may be writable by the service account.
 | every stack `dir`, its compose file, its `.env` | `root:root` | not writable by `dup` |
 | every `pre_update.command` | `root:root` | not writable by `dup` |
 
-That last row is the one that matters most and the one the installer cannot fix for you:
+The installer never prints either secret. Installer output has a habit of ending up in
+shell scrollback, CI logs, terminal recordings and pasted bug reports, so read them
+deliberately instead:
+
+```bash
+sudo cat /etc/dup/bearer.token
+sudo cat /etc/dup/github.secret
+```
+
+To rotate one, overwrite it and restart. Anything of at least 32 characters is accepted,
+and dup reads them at startup, so nothing is live until the restart:
+
+```bash
+( umask 077 && openssl rand -hex 32 | sudo tee /etc/dup/bearer.token >/dev/null )
+sudo chown root:dup /etc/dup/bearer.token && sudo chmod 0640 /etc/dup/bearer.token
+sudo systemctl restart dup
+```
+
+Rotate the GitHub secret the same way, then update it in the webhook settings. Rotating the
+bearer token invalidates every caller using it, so update n8n and anything else first.
+
+That `pre_update.command` row is the one that matters most and the one the installer cannot
+fix for you:
 
 ```bash
 dup audit

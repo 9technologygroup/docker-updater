@@ -578,14 +578,15 @@ else
     echo "  sudo ${API_BIN} update <stack> --dry-run"
     echo
 fi
+# Never print the secrets themselves. Installer output ends up in shell
+# scrollback, CI logs, terminal recordings and pasted bug reports.
 if [ "${SECRETS_GENERATED}" = "yes" ]; then
-    echo "  bearer token   $(cat "${TOKEN_FILE}")"
-    echo "  github secret  $(cat "${GH_SECRET_FILE}")"
+    echo "  Secrets generated, root:${SVC_USER} 0640. Read them when you need them:"
 else
-    echo "  Secrets were left alone. Read them with:"
-    echo "    sudo cat ${TOKEN_FILE}"
-    echo "    sudo cat ${GH_SECRET_FILE}"
+    echo "  Secrets left alone. Read them when you need them:"
 fi
+echo "    sudo cat ${TOKEN_FILE}         bearer token, for callers and the CLI"
+echo "    sudo cat ${GH_SECRET_FILE}       GitHub webhook secret"
 echo
 if [ "${SCHEME}" = "https" ]; then
     echo "  dup is serving TLS itself, so a reverse proxy is optional."
