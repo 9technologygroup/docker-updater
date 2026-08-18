@@ -174,27 +174,217 @@ itself is removed.
 
 ## Commands
 
+Every command takes `--config <path>`, defaulting to `/etc/dup/config.yml`. Flags and the
+stack name work in either order, so `dup update --dry-run web` and `dup update web --dry-run`
+do the same thing. `dup <command> -h` prints that command's flags and exits 0.
+
 | Command | What it does |
 |---|---|
-| `dup list` | Stacks, their update policy, and every compose project or container on the host that dup is **not** covering |
-| `dup logs [stack]` | Finished updates, newest first. `--job <id>` for one in full, plus `--full` and `--limit` |
-| `dup status [stack]` | Alias for `dup logs`. It used to read a separate in-memory list that said almost the same thing |
-| `dup scan [stack]` | Check every stack against its registry now, without updating anything |
-| `dup update <stack>` | Trigger an update. `--tag`, `--dry-run`, `--force`, `--reason`, `--wait`. `--dry-run` pulls and reports what would change without recreating anything |
-| `dup check` | Validate the config |
-| `dup audit` | Verify the service account cannot rewrite what runs as root |
-| `dup cert` | Generate the self-signed TLS certificate (run as root) |
-| `dup version` | Version and commit, and whether a newer release is out. `--full` adds build date, toolchain, licence, source and the latest release. `--check` forces a check, `--no-check` skips it |
-| `dup serve` | The unprivileged HTTP API (systemd runs this) |
-| `dup-agent` | The privileged agent (systemd runs this) |
+| `dup list` | Stacks, their update policy, when each is next checked, anything mid-flight, and every compose project or container on the host that dup is **not** covering |
+| `dup logs [stack]` | Finished updates, newest first, read from disk so they survive a restart |
+| `dup status [stack]` | Alias for `dup logs` |
+| `dup scan [stack]` | Check against the registry now, without updating anything |
+| `dup update <stack>` | Trigger an update |
+| `dup check` | Validate the config, and warn if the running agent has a different one |
+| `dup audit` | Prove the service account cannot rewrite what runs as root |
+| `dup cert` | Generate the self-signed TLS certificate. Root only |
+| `dup version` | Version, commit, and whether a newer release is out |
+| `dup serve` | The unprivileged HTTP API. systemd runs this |
+| `dup-agent` | The privileged agent. systemd runs this |
 
-Flags and the stack name work in either order, so `dup update --dry-run web` and `dup update web --dry-run` do the same thing.
+`dup list` is the one to reach for first. It answers "what is dup responsible for, what is
+waiting to apply, and what is quietly drifting outside it".
 
-`dup list` is the one to reach for first. It answers "what is dup responsible for, what is waiting to apply, and what is quietly drifting outside it".
+### Flags
+
+| Command | Flag | Default | Meaning |
+|---|---|---|---|
+| all | `--config` | `/etc/dup/config.yml` | Path to the config file |
+| `update` | `--tag` | none | Image tag to deploy. Only for targets with `image_tag_env` set, otherwise refused |
+| `update` | `--reason` | none | Free text recorded on the job, so `dup logs` says why |
+| `update` | `--dry-run` | `false` | Pull and report what would change, recreating nothing |
+| `update` | `--force` | `false` | Recreate even when the images have not changed. For a container misbehaving on the image it is already on |
+| `update` | `--wait` | `4m` | How long to wait for the result. Clamped to the 5m the API will hold a request open |
+| `logs` | `--limit` | `20` | How many jobs to show |
+| `logs` | `--job` | none | Show one job in full, with every step and its output. A prefix of the id is enough |
+| `logs` | `--full` | `false` | Show every step of each job, not just the summary |
+| `scan` | `--timeout` | `15m` | Budget for the whole scan across every stack |
+| `list` | `--all` | `false` | Also list compose projects dup already covers |
+| `cert` | `--force` | `false` | Replace an existing certificate |
+| `cert` | `--defaults` | `false` | Generate at the default paths without reading a config, which is what the installer uses on a fresh host |
+| `version` | `--full` | `false` | Add commit, build date, toolchain, licence, source and the latest release |
+| `version` | `--check` | `false` | Check for a newer release now, ignoring the cache |
+| `version` | `--no-check` | `false` | Skip the release check entirely |
+
+`dup-agent` takes only `-config`, plus `-version`, `-ver` or `-v`.
+
+### Exit codes
+
+| Code | When |
+|---|---|
+| `0` | Success, including a dry run, a `no_change`, and asking for help |
+| `1` | Anything else: a failed update, a rolled-back update, an unreachable API or agent, an invalid config, a stack that could not be scanned |
+
+An update that is still running when `--wait` expires exits `0` and tells you to follow it
+with `dup logs`, because it has not failed.
+
+### Environment variables
+
+| Variable | Used by | Meaning |
+|---|---|---|
+| `DUP_NO_UPDATE_CHECK` | `dup` | Any non-empty value disables the release check everywhere, including in `dup serve`. Absolute: `--check` cannot override it |
+| `DUP_GITHUB_TOKEN` | `dup` | Authenticates the release check, which lifts the unauthenticated 60 requests an hour limit. Useful when several hosts share an egress address |
+| `DUP_GITHUB_REPO` | `dup`, `install.sh` | Check and install from a fork rather than `9technologygroup/docker-updater` |
+| `DUP_CACHE_FILE` | `dup` | Where the release check caches its answer. Defaults to `/var/lib/dup/update-check.json` |
+| `DUP_VERSION` | `install.sh` | Install a specific tag rather than the latest release |
+| `UPDATER_BEARER_TOKEN` | `dup` | Overrides the bearer token from the config, including the file form |
+| `UPDATER_GITHUB_SECRET` | `dup` | Overrides the GitHub webhook secret from the config |
+
+The last two are read from the environment of whichever process loads the config, so setting
+them means putting a secret in a systemd unit or a shell. The file form is preferred.
 
 ---
 
 ## Configuration
+
+One file, `/etc/dup/config.yml`, owned `root:dup 0640`. The reference config the installer
+drops at `/etc/dup/config.example.yml` carries the same content as comments.
+
+Unknown keys are rejected at load rather than ignored, so a typo is an error rather than a
+setting that silently does nothing.
+
+### Top level
+
+| Key | Default | Meaning |
+|---|---|---|
+| `listen` | `127.0.0.1:7788` | Address the API binds. Off-loopback without TLS is refused unless `allow_non_loopback` |
+| `allow_non_loopback` | `false` | Permit plaintext on a non-loopback address. dup complains in the log if you do |
+| `agent_socket` | `/run/dup/agent.sock` | Unix socket to the privileged agent. Absolute, and under 100 bytes because that is the kernel limit |
+| `agent_peer_user` | none, required | The account the API runs as. The agent accepts connections only from this uid and root |
+| `log_level` | `info` | `debug`, `info`, `warn` or `error` |
+| `log_file` | `/var/log/dup/dup.log` | Second copy of the log, rotated and gzipped by dup. `none` disables. The journal always gets everything regardless |
+| `log_max_size_mb` | `10` | Rotate the log at this size |
+| `log_keep` | `5` | Gzipped log archives to keep |
+| `history_file` | `/var/lib/dup/history.jsonl` | Durable record of finished updates, which is what `dup logs` reads. `none` disables |
+| `history_max_size_mb` | `8` | Rotate the history at this size |
+| `history_keep` | `4` | Gzipped history archives to keep |
+
+The agent writes its own log beside yours, at `/var/log/dup-agent/dup-agent.log`, in a
+separate directory so the unprivileged account cannot rewrite the root process's record.
+
+### `tls`
+
+| Key | Default | Meaning |
+|---|---|---|
+| `enabled` | inferred | The switch. Set it and it wins outright. Leave it out and TLS is inferred from the rest of the block, which is how configs written before it existed behave |
+| `self_signed` | `false` | dup generates and may replace the pair. `dup cert` refuses to touch a certificate you manage |
+| `cert_file` | `/etc/dup/self-signed.crt` when `self_signed` | Certificate to serve |
+| `key_file` | `/etc/dup/self-signed.key` when `self_signed` | Its private key. Must be set together with `cert_file` |
+| `hosts` | hostname, `localhost`, `127.0.0.1`, `::1`, plus the `listen` host | Names and IPs to put in a generated certificate. Only used when dup generates one |
+
+### `auth`
+
+At least one of the two must be configured, or the config is refused. Each secret must be at
+least 32 characters.
+
+| Key | Meaning |
+|---|---|
+| `bearer_token_file` | Absolute path to the token file. Preferred over the inline form |
+| `bearer_token` | The token inline. Cleared from memory after load |
+| `github_secret_file` | Absolute path to the webhook HMAC secret |
+| `github_secret` | The secret inline |
+
+A secret file must be a regular file, owned by root, not world accessible or group writable,
+and not sitting in a group or world writable directory. Anything else is refused rather than
+used. `UPDATER_BEARER_TOKEN` and `UPDATER_GITHUB_SECRET` in the environment take precedence
+over both forms.
+
+### `allow_from`, `trusted_proxies`, `cors`
+
+| Key | Default | Meaning |
+|---|---|---|
+| `allow_from` | empty, meaning anywhere that can reach the port | IPs or CIDRs permitted to call the API |
+| `trusted_proxies` | empty | IPs or CIDRs whose `X-Forwarded-For` is believed. With this empty, the header is ignored entirely and the peer address is used |
+| `cors.allowed_origins` | empty, CORS off | Exact origins that may call the API from a browser. `*` is refused |
+
+### `notify`
+
+| Key | Default | Meaning |
+|---|---|---|
+| `url` | empty, disabled | Where to POST the result of every finished job. `http` or `https` only |
+| `timeout` | `15s` | How long to wait for it |
+| `headers` | none | Extra headers, for an auth token on the receiving end |
+
+### `defaults`
+
+Every one of these is the fallback for the target key of the same name.
+
+| Key | Default |
+|---|---|
+| `check_interval` | `6h` |
+| `soak` | `30m` |
+| `pull_timeout` | `10m` |
+| `health_timeout` | `3m` |
+| `job_timeout` | `25m` |
+| `stability_window` | `15s` |
+| `rollback` | `true` |
+
+### `targets`
+
+A config with no targets is valid: dup starts, manages nothing, and `dup list` shows you the
+host so you can decide what it should own.
+
+| Key | Required | Default | Meaning |
+|---|---|---|---|
+| `name` | **yes** | | What callers refer to. Must match `^[a-z0-9][a-z0-9._-]{0,63}$` |
+| `dir` | **yes** | | Absolute path holding the compose file. Commands run here, so `.env` resolves exactly as it does by hand |
+| `compose_file` | no | first of `compose.yaml`, `compose.yml`, `docker-compose.yaml`, `docker-compose.yml` found in `dir` | Bare filename inside `dir`. A path, or a symlink pointing outside `dir`, is refused |
+| `env_file` | no | compose's own `.env` handling | Bare filename inside `dir`, passed as `--env-file`. Same path and symlink rules as `compose_file` |
+| `services` | no | every service | Restrict the update to these. Also the health-check scope. Each must match `^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$` |
+| `auto_update` | no | `false` | Poll for a new image and apply it without being asked |
+| `check_interval` | no | `defaults.check_interval` | How often to poll. Minimum `1m`, and only used when `auto_update` is on |
+| `soak` | no | `defaults.soak` | How long a new image must have been available before it is applied. `0s` applies on sight. Cannot be negative |
+| `rollback` | no | `defaults.rollback` | Restore the previous images if the update does not come up healthy |
+| `health_timeout` | no | `defaults.health_timeout` | How long to wait for services to settle before calling the update failed |
+| `stability_window` | no | `defaults.stability_window` | How long they must stay settled. **Must be shorter than `health_timeout`**, which is enforced at load. See [Health checks](#health-checks-and-what-healthy-means) |
+| `pull_timeout` | no | `defaults.pull_timeout` | Budget for `docker compose pull` |
+| `job_timeout` | no | `defaults.job_timeout` | Budget for the whole update, pull and health check included |
+| `image_tag_env` | no | unset | Enables the `tag` parameter, exported to compose so `image: repo:${APP_VERSION}` becomes settable per request. Must match `^[A-Z][A-Z0-9_]{0,63}$`. Without it a tag is refused |
+| `allow_prerelease` | no | `false` | Whether a GitHub pre-release webhook triggers an update |
+| `pre_update` | no | none | A command to run before anything is recreated. See below |
+
+### `pre_update`
+
+Runs **as root**, from the agent, with the working directory set to `dir`. No shell, so `args`
+is a list. See [Backups before an update](#backups-before-an-update) for what to use it for,
+and [SECURITY.md](SECURITY.md) for why `dup audit` covers it.
+
+| Key | Required | Default | Meaning |
+|---|---|---|---|
+| `command` | **yes** if `pre_update` is set | | Absolute path. Must exist and be an executable regular file at config load |
+| `args` | no | none | Arguments, as a list |
+| `timeout` | no | `10m` | How long it may run before it is killed |
+| `required` | no | `true` | `true` aborts the update on a non-zero exit and touches nothing. `false` records the failure and carries on |
+
+The environment carries `DUP_STACK`, `DUP_DIR`, `DUP_TAG` and `DUP_SERVICES`, on top of the
+agent's own environment.
+
+### Rules enforced at load
+
+Worth knowing, because each is refused rather than warned about:
+
+- `dir` must be absolute, and must exist unless it is simply missing, in which case you get a
+  warning and dup still starts. That is deliberate: `dup check` gates `ExecStartPre`, so a
+  failure would keep both units down over one unmounted volume.
+- **No two stacks may share a directory basename.** Compose derives the project name from it,
+  so updating one would stop the other's containers.
+- `compose_file` and `env_file` must be bare filenames inside `dir`, and must not resolve
+  through a symlink to somewhere else.
+- `stability_window` must be shorter than `health_timeout`.
+- `check_interval` must be at least `1m` when `auto_update` is on.
+- `agent_socket` must be absolute and under 100 bytes.
+
+### A complete example
 
 ```yaml
 listen: "127.0.0.1:7788"
@@ -202,6 +392,27 @@ log_level: info
 
 agent_socket: /run/dup/agent.sock
 agent_peer_user: dup
+
+log_file: /var/log/dup/dup.log
+log_max_size_mb: 10
+log_keep: 5
+
+history_file: /var/lib/dup/history.jsonl
+history_max_size_mb: 8
+history_keep: 4
+
+tls:
+  enabled: true
+  self_signed: true
+  cert_file: /etc/dup/self-signed.crt
+  key_file: /etc/dup/self-signed.key
+  hosts: []
+
+allow_from: []
+trusted_proxies: []
+
+cors:
+  allowed_origins: []
 
 auth:
   bearer_token_file: /etc/dup/bearer.token
@@ -226,33 +437,28 @@ targets:
   - name: app
     dir: /opt/app
     compose_file: docker-compose.yml
+    env_file: .env
     auto_update: true
     check_interval: 6h
     soak: 30m
 
   - name: api
     dir: /opt/api
-    compose_file: docker-compose.yml
-    services: [api]
+    services: [api, worker]
     image_tag_env: APP_VERSION
+    allow_prerelease: false
+    health_timeout: 5m
+    stability_window: 30s
+
+  - name: db
+    dir: /opt/db
+    rollback: true
+    pre_update:
+      command: /usr/local/bin/backup-db
+      args: ["--quick"]
+      timeout: 15m
+      required: true
 ```
-
-| Key | Meaning |
-|---|---|
-| `dir` | Absolute path to the stack. Commands run here, so `.env` resolves exactly as it does by hand. |
-| `compose_file` | Bare filename inside `dir`. Omit it and the usual four names are auto-detected. |
-| `services` | Restrict the update to these services. Omit for the whole stack. This is also the health-check scope. |
-| `auto_update` | Poll for a new image and apply it without anyone triggering it. |
-| `check_interval` | How often to poll. Minimum one minute. |
-| `soak` | How long a new image must have been available before it is applied. `0s` applies on sight. |
-| `image_tag_env` | Enables the `tag` parameter. The value is exported to compose, so `image: repo:${APP_VERSION}` becomes settable per request. Without it, tags are refused. |
-| `allow_prerelease` | Whether a GitHub pre-release triggers an update. Off by default. |
-| `rollback` | Auto-rollback on a failed health check. On by default. |
-| `health_timeout` | How long to wait for services to become healthy before treating the update as failed. |
-| `stability_window` | How long they must stay healthy before the update is declared good. Stops a container that starts and then crashes a few seconds later from being reported as a success. |
-| `pre_update` | Command to run before anything is recreated. See **Backups before an update**. |
-
-Two directory-level rules worth knowing. `dir` must be absolute, and no two stacks may share a directory basename, because compose derives the project name from it and updating one would stop the other's containers. Both are refused at config load.
 
 ### Private registries
 
