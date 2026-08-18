@@ -101,6 +101,8 @@ func runServe(args []string) error {
 			return client.Check(ctx, target)
 		})
 
+	manager.OnComplete(func(target string, _ job.Snapshot) { scheduler.ClearPending(target) })
+
 	go scheduler.Run(ctx)
 	go watchForNewRelease(ctx, checker, log)
 

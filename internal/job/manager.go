@@ -27,7 +27,15 @@ type Manager struct {
 	backend  Backend
 	notifier Notifier
 	recorder Recorder
+	onDone   func(target string, snap Snapshot)
 	log      *slog.Logger
+}
+
+// OnComplete fires when any update finishes, whoever asked for it. The scheduler
+// uses it to drop a pending soak that somebody has already applied by hand.
+func (m *Manager) OnComplete(fn func(target string, snap Snapshot)) *Manager {
+	m.onDone = fn
+	return m
 }
 
 func (m *Manager) WithRecorder(r Recorder) *Manager {
@@ -77,6 +85,10 @@ func (m *Manager) run(t *config.Target, j *Job, req Request) {
 		"job", snap.ID, "target", snap.Target, "state", string(snap.State),
 		"trigger", snap.Trigger, "changed", snap.Changed,
 		"duration_ms", snap.DurationMS, "message", snap.Message)
+
+	if m.onDone != nil {
+		m.onDone(snap.Target, snap)
+	}
 
 	if m.recorder != nil {
 		if err := m.recorder.Append(snap); err != nil {
