@@ -90,10 +90,6 @@ func (e *Pipeline) pipeline(ctx context.Context, t *config.Target, sink job.Sink
 	updateServices := slices.Clone(t.Services)
 	healthServices := healthTargets(t, before)
 
-	if req.DryRun {
-		return job.StateDryRun, dryRunMessage(t, before, updateServices, req.Tag)
-	}
-
 	desired := e.resolveImages(ctx, sink, t, env, before)
 
 	if msg, ok := e.tagChangesMoreThanTheTag(ctx, t, req, desired); !ok {
@@ -109,6 +105,14 @@ func (e *Pipeline) pipeline(ctx context.Context, t *config.Target, sink job.Sink
 
 	changed := e.changedServices(ctx, before, desired, t)
 	sink.SetChanged(changed)
+
+	// The dry run stops here rather than before the pull. Answering "what would
+	// change" needs the new images on disk to compare against; stopping earlier
+	// could only ever report the shape of the stack, never the diff.
+	if req.DryRun {
+		sink.SetAfter(toServiceStates(before))
+		return job.StateDryRun, dryRunMessage(t, before, changed, updateServices, req.Tag)
+	}
 
 	if len(changed) == 0 && !req.Force && allSettled(before, healthServices) {
 		sink.SetAfter(toServiceStates(before))
@@ -590,16 +594,24 @@ func refTag(ref string) string {
 	return tag
 }
 
-func dryRunMessage(t *config.Target, before []compose.Container, updateServices []string, tag string) string {
+func dryRunMessage(t *config.Target, before []compose.Container, changed, updateServices []string, tag string) string {
 	scope := "the whole stack"
 	if len(updateServices) > 0 {
 		scope = strings.Join(updateServices, ", ")
 	}
-	msg := fmt.Sprintf("dry run: would pull and recreate %s in %s (%d container(s) running)", scope, t.Dir, len(before))
+
+	var msg string
+	if len(changed) == 0 {
+		msg = fmt.Sprintf("dry run: nothing to do, %s in %s is already on the latest images (%d container(s) running)",
+			scope, t.Dir, len(before))
+	} else {
+		msg = fmt.Sprintf("dry run: would recreate %s in %s to pick up a new image for %s (%d container(s) running)",
+			scope, t.Dir, strings.Join(changed, ", "), len(before))
+	}
 	if tag != "" && t.ImageTagEnv != "" {
 		msg += fmt.Sprintf(" with %s=%s", t.ImageTagEnv, tag)
 	}
-	return msg
+	return msg + ". Images were pulled so the comparison is real; nothing was recreated"
 }
 
 func cmdString(bin string, args []string) string {

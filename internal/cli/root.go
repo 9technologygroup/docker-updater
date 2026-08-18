@@ -1,8 +1,10 @@
 package cli
 
 import (
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"strings"
@@ -15,21 +17,54 @@ const DefaultConfigPath = "/etc/dup/config.yml"
 
 type command struct {
 	name    string
+	group   string
 	summary string
 	run     func(args []string) error
 }
 
+const (
+	groupSetup = "Set up, in this order"
+	groupDaily = "Day to day"
+	groupUnit  = "Run by systemd"
+)
+
+var groupOrder = []string{groupSetup, groupDaily, groupUnit}
+
 func commands() []command {
 	return []command{
-		{"list", "show configured stacks, their update policy, and what dup is not covering", runList},
-		{"status", "show recent update jobs for one stack or all of them", runStatus},
-		{"update", "trigger an update for one stack", runUpdate},
-		{"check", "validate the config file and exit", runCheck},
-		{"audit", "verify the service account cannot rewrite what runs as root", runAudit},
-		{"cert", "generate the self-signed TLS certificate (root)", runCert},
-		{"serve", "run the unprivileged HTTP API (systemd runs this)", runServe},
-		{"version", "print the version", runVersion},
+		{"check", groupSetup, "validate the config file and exit", runCheck},
+		{"audit", groupSetup, "verify the service account cannot rewrite what runs as root", runAudit},
+		{"cert", groupSetup, "generate the self-signed TLS certificate (root)", runCert},
+
+		{"list", groupDaily, "show configured stacks, their update policy, and what dup is not covering", runList},
+		{"status", groupDaily, "show recent update jobs for one stack or all of them", runStatus},
+		{"update", groupDaily, "trigger an update for one stack", runUpdate},
+		{"version", groupDaily, "print the version and check for a newer release", runVersion},
+
+		{"serve", groupUnit, "run the unprivileged HTTP API", runServe},
 	}
+}
+
+// aliases maps the spellings people actually type onto a command. Only exact
+// members are accepted, so a typo still prints usage rather than being guessed at.
+var aliases = map[string]string{
+	"v": "version", "ver": "version", "version": "version",
+	"h": "help", "help": "help",
+}
+
+func canonical(arg string) (string, bool) {
+	trimmed := arg
+	for range 2 {
+		if !strings.HasPrefix(trimmed, "-") {
+			break
+		}
+		trimmed = trimmed[1:]
+	}
+	if trimmed == "" || strings.HasPrefix(trimmed, "-") {
+		return "", false
+	}
+	name, ok := aliases[strings.ToLower(trimmed)]
+	return name, ok
 }
 
 func Run(args []string) error {
@@ -38,17 +73,28 @@ func Run(args []string) error {
 		return nil
 	}
 
-	switch args[0] {
-	case "-h", "--help", "help":
+	name := args[0]
+	if c, ok := canonical(name); ok {
+		name = c
+	}
+	if name == "help" {
+		// Forward only to something that is not itself help, or "dup help help"
+		// bounces between these two branches until the stack runs out.
+		if len(args) > 1 {
+			if sub, ok := canonical(args[1]); !ok || sub != "help" {
+				return Run([]string{args[1], "-h"})
+			}
+		}
 		usage(os.Stdout)
 		return nil
-	case "-v", "--version":
-		return runVersion(nil)
 	}
 
 	for _, c := range commands() {
-		if c.name == args[0] {
-			return c.run(args[1:])
+		if c.name == name {
+			if err := c.run(args[1:]); err != nil && !errors.Is(err, errHelpRequested) {
+				return err
+			}
+			return nil
 		}
 	}
 
@@ -57,48 +103,86 @@ func Run(args []string) error {
 	return fmt.Errorf("unknown command %q", args[0])
 }
 
-func usage(w *os.File) {
+func usage(w io.Writer) {
 	_, _ = fmt.Fprintf(w, "dup %s - webhook driven Docker Compose updates with health checks and rollback\n\n", version.Short())
-	_, _ = fmt.Fprintf(w, "usage: dup <command> [flags]\n\n")
+	_, _ = fmt.Fprintf(w, "usage: dup <command> [flags]\n")
 
+	all := commands()
 	var width int
-	for _, c := range commands() {
+	for _, c := range all {
 		if len(c.name) > width {
 			width = len(c.name)
 		}
 	}
-	for _, c := range commands() {
-		_, _ = fmt.Fprintf(w, "  %-*s  %s\n", width, c.name, c.summary)
+
+	for _, group := range groupOrder {
+		_, _ = fmt.Fprintf(w, "\n%s\n", group)
+		for _, c := range all {
+			if c.group == group {
+				_, _ = fmt.Fprintf(w, "  %-*s  %s\n", width, c.name, c.summary)
+			}
+		}
 	}
+
 	_, _ = fmt.Fprintf(w, "\nrun 'dup <command> -h' for the flags a command takes\n")
 	_, _ = fmt.Fprintf(w, "config defaults to %s\n", DefaultConfigPath)
-}
-
-func runVersion(args []string) error {
-	fs := flag.NewFlagSet("dup version", flag.ContinueOnError)
-	full := fs.Bool("full", false, "print commit, build date and toolchain too")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	if *full {
-		fmt.Print(version.Full("dup"))
-		return nil
-	}
-	fmt.Println(version.Info("dup"))
-	return nil
-}
-
-func popPositional(args []string) (string, []string) {
-	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
-		return args[0], args[1:]
-	}
-	return "", args
 }
 
 func newFlagSet(name string) (*flag.FlagSet, *string) {
 	fs := flag.NewFlagSet("dup "+name, flag.ContinueOnError)
 	configPath := fs.String("config", DefaultConfigPath, "path to the config file")
 	return fs, configPath
+}
+
+// errHelpRequested unwinds a -h to a clean exit. Asking for help is not an error,
+// and returning flag.ErrHelp makes main print "error: flag: help requested".
+var errHelpRequested = errors.New("help requested")
+
+// parseFlags accepts flags and positional arguments in any order. Go's flag
+// package stops at the first non-flag argument, so re-parsing what follows is
+// what lets "dup update --dry-run web" and "dup update web --dry-run" agree.
+func parseFlags(fs *flag.FlagSet, args []string) ([]string, error) {
+	var positional []string
+	for {
+		if err := fs.Parse(args); err != nil {
+			if errors.Is(err, flag.ErrHelp) {
+				return nil, errHelpRequested
+			}
+			return nil, err
+		}
+		if fs.NArg() == 0 {
+			return positional, nil
+		}
+		positional = append(positional, fs.Arg(0))
+		args = fs.Args()[1:]
+	}
+}
+
+// oneTarget parses flags and returns the single optional stack name.
+func oneTarget(fs *flag.FlagSet, args []string, usageLine string) (string, error) {
+	positional, err := parseFlags(fs, args)
+	if err != nil {
+		return "", err
+	}
+	switch len(positional) {
+	case 0:
+		return "", nil
+	case 1:
+		return positional[0], nil
+	default:
+		return "", fmt.Errorf("usage: %s", usageLine)
+	}
+}
+
+func noArgs(fs *flag.FlagSet, args []string, name string) error {
+	positional, err := parseFlags(fs, args)
+	if err != nil {
+		return err
+	}
+	if len(positional) > 0 {
+		return fmt.Errorf("dup %s takes no arguments, got %q", name, positional[0])
+	}
+	return nil
 }
 
 func newLogger(level string) *slog.Logger {

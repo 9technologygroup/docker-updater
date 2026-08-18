@@ -33,12 +33,18 @@ func main() {
 
 func run() error {
 	configPath := flag.String("config", "/etc/dup/config.yml", "path to the config file")
-	showVersion := flag.Bool("version", false, "print the version and exit")
+	var showVersion bool
+	flag.BoolVar(&showVersion, "version", false, "print the version and exit")
+	flag.BoolVar(&showVersion, "ver", false, "")
+	flag.BoolVar(&showVersion, "v", false, "")
 	flag.Parse()
 
-	if *showVersion {
+	if showVersion {
 		fmt.Println(version.Info("dup-agent"))
 		return nil
+	}
+	if flag.NArg() > 0 {
+		return fmt.Errorf("dup-agent takes no arguments, got %q; the config path is a flag: dup-agent -config %s", flag.Arg(0), *configPath)
 	}
 
 	cfg, err := config.LoadAgent(*configPath)

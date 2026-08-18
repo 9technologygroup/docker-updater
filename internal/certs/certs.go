@@ -76,10 +76,12 @@ func Generate(certFile, keyFile string, hosts []string, ownerGID int) (Result, e
 		Subject:               pkix.Name{CommonName: primaryHost(hosts), Organization: []string{"dup"}},
 		NotBefore:             time.Now().Add(-time.Hour),
 		NotAfter:              time.Now().Add(validity),
-		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
+		KeyUsage:              x509.KeyUsageDigitalSignature,
 		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 		BasicConstraintsValid: true,
-		IsCA:                  true,
+		// Not a CA. dup cert tells people to import this certificate, and a CA
+		// they trust could mint certificates for any name at all.
+		IsCA: false,
 	}
 	for _, h := range hosts {
 		if ip := net.ParseIP(h); ip != nil {
