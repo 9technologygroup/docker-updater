@@ -15,6 +15,7 @@ GH_SECRET_FILE="${CONF_DIR}/github.secret"
 UNIT_DIR="/etc/systemd/system"
 PKG_UNIT_DIR="/lib/systemd/system"
 STATE_DIR="/var/lib/dup"
+RUNTIME_DIR="/run/dup"
 
 SRC_DIR="$(cd "$(dirname "$0")" 2>/dev/null && pwd || echo .)"
 DOWNLOAD_DIR=""
@@ -31,10 +32,154 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# ------------------------------------------------------------------ options
+
+ACTION=install
+PURGE=no
+ASSUME_YES=no
+FORCE=no
+
+usage() {
+    cat <<USAGE
+dup installer
+
+  sudo ./install.sh                 install or upgrade
+  sudo ./install.sh --uninstall     stop and remove dup, keeping ${CONF_DIR}
+  sudo ./install.sh --uninstall --purge
+                                    also remove ${CONF_DIR} and the ${SVC_USER} account
+
+Options
+  --purge      with --uninstall, delete the config, secrets and certificate too
+  -y, --yes    do not ask for confirmation
+  --force      uninstall even when the files belong to a distribution package
+  -h, --help   this
+
+Environment
+  DUP_VERSION        install a specific tag rather than the latest release
+  DUP_GITHUB_REPO    install from a fork
+USAGE
+}
+
+for arg in "$@"; do
+    case "${arg}" in
+        --uninstall)  ACTION=uninstall ;;
+        --purge)      ACTION=uninstall; PURGE=yes ;;
+        -y|--yes)     ASSUME_YES=yes ;;
+        --force)      FORCE=yes ;;
+        -h|--help)    usage; exit 0 ;;
+        *)            usage >&2; die "unknown option: ${arg}" ;;
+    esac
+done
+
 # ---------------------------------------------------------------- preflight
 
 [ "$(id -u)" -eq 0 ] || die "run this as root (it creates a service account and installs systemd units)"
 command -v systemctl >/dev/null 2>&1 || die "systemd is required"
+
+# ---------------------------------------------------------------- uninstall
+
+package_owned() {
+    if command -v dpkg-query >/dev/null 2>&1 && dpkg-query -S "$1" >/dev/null 2>&1; then
+        return 0
+    fi
+    if command -v rpm >/dev/null 2>&1 && rpm -qf "$1" >/dev/null 2>&1; then
+        return 0
+    fi
+    return 1
+}
+
+confirm() {
+    [ "${ASSUME_YES}" = "yes" ] && return 0
+    if [ ! -t 0 ]; then
+        die "not running interactively, so nothing was removed. Re-run with --yes if you mean it"
+    fi
+    printf 'Type "yes" to continue: '
+    read -r reply
+    [ "${reply}" = "yes" ] || die "nothing was removed"
+}
+
+remove_path() {
+    if [ -e "$1" ]; then
+        rm -rf "$1"
+        log "removed $1"
+    fi
+}
+
+do_uninstall() {
+    # A deb or rpm install must be removed by its package manager, or the
+    # package database is left describing files that are no longer there.
+    if [ "${FORCE}" != "yes" ] && { package_owned "${BIN_DIR}/${API_BIN}" || [ -f "${PKG_UNIT_DIR}/${API_BIN}.service" ]; }; then
+        warn "dup was installed from a distribution package."
+        warn "Remove it with the package manager so its database stays correct:"
+        warn "    sudo apt remove dup          (or apt purge dup)"
+        warn "    sudo dnf remove dup"
+        warn "    sudo apk del dup"
+        die "pass --force to remove it with this script anyway"
+    fi
+
+    echo
+    warn "This will stop dup and remove:"
+    warn "  ${BIN_DIR}/${API_BIN}, ${BIN_DIR}/${AGENT_BIN}"
+    warn "  ${UNIT_DIR}/${API_BIN}.service, ${UNIT_DIR}/${AGENT_BIN}.service"
+    warn "  ${STATE_DIR}, ${RUNTIME_DIR}"
+    if [ "${PURGE}" = "yes" ]; then
+        warn "  ${CONF_DIR}  including the config, both secrets and the TLS certificate"
+        warn "  the ${SVC_USER} system account"
+    else
+        warn "Keeping ${CONF_DIR}, so the config, secrets and certificate survive."
+        warn "Add --purge to remove those too."
+    fi
+    warn ""
+    warn "Your compose stacks are NOT touched. Whatever dup was updating keeps running."
+    echo
+    confirm
+
+    log "stopping services"
+    systemctl stop "${API_BIN}" "${AGENT_BIN}" 2>/dev/null || true
+    systemctl disable "${API_BIN}" "${AGENT_BIN}" 2>/dev/null || true
+
+    remove_path "${UNIT_DIR}/${API_BIN}.service"
+    remove_path "${UNIT_DIR}/${AGENT_BIN}.service"
+    systemctl daemon-reload || true
+    systemctl reset-failed "${API_BIN}" "${AGENT_BIN}" 2>/dev/null || true
+
+    remove_path "${BIN_DIR}/${API_BIN}"
+    remove_path "${BIN_DIR}/${AGENT_BIN}"
+    remove_path "${LEGACY_BIN_DIR}/${API_BIN}"
+    remove_path "${LEGACY_BIN_DIR}/${AGENT_BIN}"
+    remove_path "${STATE_DIR}"
+    remove_path "${RUNTIME_DIR}"
+
+    if [ "${PURGE}" = "yes" ]; then
+        remove_path "${CONF_DIR}"
+        if id -u "${SVC_USER}" >/dev/null 2>&1; then
+            userdel "${SVC_USER}" 2>/dev/null || deluser "${SVC_USER}" 2>/dev/null ||                 warn "could not remove the ${SVC_USER} account, do it by hand"
+            log "removed the ${SVC_USER} account"
+        fi
+    fi
+
+    echo
+    log "dup removed"
+    if [ "${PURGE}" != "yes" ] && [ -d "${CONF_DIR}" ]; then
+        echo
+        echo "  ${CONF_DIR} was left in place. It still holds your config, both secrets"
+        echo "  and the TLS certificate. Remove it with:"
+        echo
+        echo "    sudo rm -rf ${CONF_DIR} && sudo userdel ${SVC_USER}"
+    fi
+    echo
+    echo "  Your compose stacks were not touched."
+    echo
+    echo "  Your shell may still have the old path cached. If 'dup' still appears to"
+    echo "  exist, run:  hash -r"
+    echo
+}
+
+if [ "${ACTION}" = "uninstall" ]; then
+    do_uninstall
+    exit 0
+fi
+
 command -v docker >/dev/null 2>&1 || die "docker is required"
 docker compose version >/dev/null 2>&1 || die "docker compose v2 is required"
 

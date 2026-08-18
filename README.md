@@ -128,6 +128,26 @@ The installer validates your existing config **with the new binary before replac
 
 There is deliberately no `dup upgrade`. The binaries are `root:root` and the service runs unprivileged, so self-replacement would either need root in the agent or break the privilege split, and a tool built on health checks and rollback should not swap itself out with a mechanism that has neither.
 
+### Uninstalling
+
+```sh
+sudo ./install.sh --uninstall            # stop and remove dup, keep /etc/dup
+sudo ./install.sh --uninstall --purge    # also remove /etc/dup and the dup account
+```
+
+Without `--purge` the config, both secrets and the TLS certificate survive, so reinstalling
+picks up where you left off. `--purge` deletes them.
+
+It asks before doing anything. Add `-y` to skip that, which is also required when running
+it non-interactively, so a piped invocation cannot silently wipe a host.
+
+If dup came from a `.deb` or `.rpm` the script refuses and points you at the package
+manager, because removing the files behind its back leaves the package database describing
+files that are no longer there. `--force` overrides that.
+
+**Your compose stacks are not touched.** Whatever dup was updating keeps running; only dup
+itself is removed.
+
 ## Commands
 
 | Command | What it does |
