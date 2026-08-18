@@ -20,7 +20,11 @@ import (
 	"github.com/9technologygroup/docker-updater/internal/server"
 )
 
-const maxAPIBody = 4 << 20
+const (
+	maxAPIBody = 4 << 20
+
+	jobPollInterval = 700 * time.Millisecond
+)
 
 type apiClient struct {
 	base  string
@@ -119,8 +123,8 @@ func (c *apiClient) do(ctx context.Context, method, path, body string, out any) 
 
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, maxAPIBody))
 	if resp.StatusCode >= 400 {
-		// Decode anyway so a caller that knows better, such as update reading a
-		// job snapshot out of a 500, can still inspect the body.
+		// Decoded even on an error so a caller that knows the shape of the body
+		// can still read it.
 		if out != nil {
 			_ = json.Unmarshal(raw, out)
 		}
@@ -190,52 +194,67 @@ func runUpdate(args []string) error {
 	defer cancel()
 
 	var snap job.Snapshot
-	path := fmt.Sprintf("/v1/targets/%s/update?wait=%s", target, wait.String())
-	if err := client.do(ctx, http.MethodPost, path, string(body), &snap); err != nil {
+	if err := client.do(ctx, http.MethodPost, "/v1/targets/"+target+"/update", string(body), &snap); err != nil {
 		var se *apiStatusError
-		if !errors.As(err, &se) {
-			return err
-		}
-		if se.status == http.StatusConflict {
+		if errors.As(err, &se) && se.status == http.StatusConflict {
 			return alreadyRunning(target, se.raw)
 		}
-		// The API answers 500 with a job snapshot when the update itself failed.
-		// Anything else, or a 500 with no job in it, is a plain error.
-		if se.status != http.StatusInternalServerError || snap.ID == "" {
-			return err
-		}
+		return err
+	}
+	if snap.ID == "" {
+		return fmt.Errorf("the API accepted the update for %s but returned no job to follow", target)
 	}
 
-	printJob(snap)
-	if !snap.State.Terminal() {
+	renderer := newJobRenderer(os.Stdout, stdoutIsTTY())
+	final, err := client.followJob(ctx, renderer, snap, *wait)
+	if err != nil {
+		return err
+	}
+	renderer.finish(final)
+
+	if !final.State.Terminal() {
 		fmt.Printf("\nStill running. Follow it with:  dup status %s\n", target)
 		return nil
 	}
-	if !snap.State.OK() {
-		return fmt.Errorf("update finished as %s", snap.State)
+	if !final.State.OK() {
+		return fmt.Errorf("update finished as %s", final.State)
 	}
 	return nil
 }
 
-func printJob(snap job.Snapshot) {
-	fmt.Printf("%s  %s\n", snap.Target, snap.State)
-	if snap.Message != "" {
-		fmt.Printf("  %s\n", snap.Message)
-	}
-	if len(snap.Changed) > 0 {
-		fmt.Printf("  changed: %s\n", strings.Join(snap.Changed, ", "))
-	}
-	fmt.Printf("  job %s in %s\n", snap.ID, time.Duration(snap.DurationMS)*time.Millisecond)
+// followJob polls until the job is terminal or the wait budget runs out. The
+// budget expiring is not a failure: the update is still running on the host.
+func (c *apiClient) followJob(ctx context.Context, r *jobRenderer, snap job.Snapshot, wait time.Duration) (job.Snapshot, error) {
+	deadline := time.Now().Add(wait)
+	tick := time.NewTicker(jobPollInterval)
+	defer tick.Stop()
 
-	for _, step := range snap.Steps {
-		mark := "ok"
-		if !step.OK {
-			mark = "FAILED"
+	for !snap.State.Terminal() {
+		r.update(snap)
+		if !time.Now().Before(deadline) {
+			break
 		}
-		fmt.Printf("    %-24s %s\n", step.Name, mark)
-		if step.Error != "" {
-			fmt.Printf("      %s\n", step.Error)
+		select {
+		case <-ctx.Done():
+			return snap, ctx.Err()
+		case <-tick.C:
 		}
+		var next job.Snapshot
+		if err := c.do(ctx, http.MethodGet, "/v1/jobs/"+snap.ID, "", &next); err != nil {
+			return snap, err
+		}
+		snap = next
+	}
+	return snap, nil
+}
+
+func printJob(snap job.Snapshot) {
+	now := time.Now()
+	for _, l := range jobSummaryLines(snap, false) {
+		fmt.Println(l)
+	}
+	for _, l := range jobStepLines(snap, now, false) {
+		fmt.Println(l)
 	}
 }
 

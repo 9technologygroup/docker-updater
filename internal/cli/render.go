@@ -1,0 +1,263 @@
+package cli
+
+import (
+	"fmt"
+	"io"
+	"os"
+	"regexp"
+	"strings"
+	"time"
+
+	"github.com/9technologygroup/docker-updater/internal/job"
+)
+
+const (
+	liveWidth       = 78
+	stepNameCol     = 24
+	stepMarkCol     = 6
+	scanResultCol   = 16
+	scanServicesCol = 24
+
+	maxStepOutputLines = 12
+)
+
+func stdoutIsTTY() bool {
+	if os.Getenv("TERM") == "dumb" {
+		return false
+	}
+	fi, err := os.Stdout.Stat()
+	return err == nil && fi.Mode()&os.ModeCharDevice != 0
+}
+
+// os.ModeCharDevice is not enough here: /dev/null is a character device too,
+// so it would report a redirected stdin as a terminal and prompt for a password.
+func stdinIsTTY() bool {
+	_, err := getTermState(int(os.Stdin.Fd()))
+	return err == nil
+}
+
+// jobRenderer draws a running job as it goes: one block redrawn in place on a
+// terminal, and each finished step emitted once anywhere else.
+type jobRenderer struct {
+	w       io.Writer
+	tty     bool
+	lines   int
+	emitted int
+	started bool
+}
+
+func newJobRenderer(w io.Writer, tty bool) *jobRenderer {
+	return &jobRenderer{w: w, tty: tty}
+}
+
+func (r *jobRenderer) update(snap job.Snapshot) {
+	if r.tty {
+		r.draw(append(jobSummaryLines(snap, true), jobStepLines(snap, time.Now(), true)...))
+		return
+	}
+	r.begin(snap)
+	r.emitSteps(snap)
+}
+
+func (r *jobRenderer) finish(snap job.Snapshot) {
+	if r.tty {
+		r.draw(append(jobSummaryLines(snap, false), jobStepLines(snap, time.Now(), false)...))
+		r.lines = 0
+		return
+	}
+	r.begin(snap)
+	r.emitSteps(snap)
+	for _, l := range jobSummaryLines(snap, false) {
+		_, _ = fmt.Fprintln(r.w, l)
+	}
+}
+
+func (r *jobRenderer) begin(snap job.Snapshot) {
+	if r.started {
+		return
+	}
+	r.started = true
+	_, _ = fmt.Fprintf(r.w, "%s  job %s started\n", snap.Target, snap.ID)
+}
+
+func (r *jobRenderer) emitSteps(snap job.Snapshot) {
+	now := time.Now()
+	for i := r.emitted; i < len(snap.Steps); i++ {
+		s := snap.Steps[i]
+		if s.Running {
+			return
+		}
+		_, _ = fmt.Fprintln(r.w, stepLine(s, now))
+		for _, l := range stepDetail(s) {
+			_, _ = fmt.Fprintln(r.w, l)
+		}
+		r.emitted = i + 1
+	}
+}
+
+func (r *jobRenderer) draw(lines []string) {
+	if r.lines > 0 {
+		_, _ = fmt.Fprintf(r.w, "\x1b[%dA", r.lines)
+	}
+	for _, l := range lines {
+		_, _ = fmt.Fprintf(r.w, "\r\x1b[2K%s\n", l)
+	}
+	extra := r.lines - len(lines)
+	for range extra {
+		_, _ = fmt.Fprint(r.w, "\r\x1b[2K\n")
+	}
+	if extra > 0 {
+		_, _ = fmt.Fprintf(r.w, "\x1b[%dA", extra)
+	}
+	r.lines = len(lines)
+}
+
+func jobSummaryLines(snap job.Snapshot, live bool) []string {
+	lines := []string{fmt.Sprintf("%s  %s", snap.Target, snap.State)}
+	if snap.Message != "" {
+		lines = append(lines, "  "+snap.Message)
+	}
+	if len(snap.Changed) > 0 {
+		lines = append(lines, "  changed: "+strings.Join(snap.Changed, ", "))
+	}
+	lines = append(lines, fmt.Sprintf("  job %s in %s", snap.ID, time.Duration(snap.DurationMS)*time.Millisecond))
+	return fitLines(lines, live)
+}
+
+func jobStepLines(snap job.Snapshot, now time.Time, live bool) []string {
+	var lines []string
+	for _, s := range snap.Steps {
+		lines = append(lines, stepLine(s, now))
+		if live {
+			if s.Error != "" {
+				lines = append(lines, "      "+s.Error)
+			}
+			continue
+		}
+		lines = append(lines, stepDetail(s)...)
+	}
+	return fitLines(lines, live)
+}
+
+func stepLine(s job.Step, now time.Time) string {
+	mark := "ok"
+	d := time.Duration(s.DurationMS) * time.Millisecond
+	switch {
+	case s.Running:
+		mark, d = "...", now.Sub(s.StartedAt)
+	case !s.OK:
+		mark = "FAILED"
+	}
+	if d < 0 {
+		d = 0
+	}
+	return fmt.Sprintf("    %-*s %-*s %s", stepNameCol, s.Name, stepMarkCol, mark, briefDuration(d))
+}
+
+// progressOnly matches compose's per-image progress lines. They are not
+// failures, and printing them buries the one line that is.
+var progressOnly = regexp.MustCompile(`^\s*(?:Image\s+)?\S+\s+(?:Pulling|Pulled|Interrupted|Waiting|Downloading|Extracting|Verifying|Skipped)\s*$`)
+
+func meaningfulLines(output string) []string {
+	var out []string
+	for line := range strings.SplitSeq(strings.TrimRight(output, "\n"), "\n") {
+		if strings.TrimSpace(line) == "" || progressOnly.MatchString(line) {
+			continue
+		}
+		out = append(out, strings.TrimRight(line, "\r"))
+	}
+	return out
+}
+
+// stepDetail carries the command output of a failed step. exec reports only
+// "exit status 1", so without this the reason a pull was refused is never shown.
+func stepDetail(s job.Step) []string {
+	var lines []string
+	if s.Error != "" {
+		lines = append(lines, "      "+s.Error)
+	}
+	if s.OK || s.Running || strings.TrimSpace(s.Output) == "" {
+		return lines
+	}
+	out := meaningfulLines(s.Output)
+	if len(out) == 0 {
+		return lines
+	}
+	if len(out) > maxStepOutputLines {
+		lines = append(lines, fmt.Sprintf("      ...%d earlier lines", len(out)-maxStepOutputLines))
+		out = out[len(out)-maxStepOutputLines:]
+	}
+	for _, l := range out {
+		lines = append(lines, "      "+strings.TrimRight(l, "\r"))
+	}
+	return lines
+}
+
+// fitLines keeps a redrawn block one screen line per logical line. The cursor
+// maths counts logical lines, so an embedded newline or a wrap desynchronises it.
+func fitLines(lines []string, live bool) []string {
+	if !live {
+		return lines
+	}
+	out := make([]string, len(lines))
+	for i, l := range lines {
+		l = strings.ReplaceAll(l, "\n", " ")
+		out[i] = clip(strings.ReplaceAll(l, "\t", " "), liveWidth)
+	}
+	return out
+}
+
+func briefDuration(d time.Duration) string {
+	switch {
+	case d < time.Second:
+		return fmt.Sprintf("%dms", d.Milliseconds())
+	case d < time.Minute:
+		return fmt.Sprintf("%.1fs", d.Seconds())
+	default:
+		return short(d.Round(time.Second))
+	}
+}
+
+// scanTable prints a row per stack as its check returns. The stack column is
+// sized from the names up front, which is what removes the need to buffer.
+type scanTable struct {
+	w       io.Writer
+	tty     bool
+	stack   int
+	pending bool
+}
+
+func newScanTable(w io.Writer, tty bool, targets []string) *scanTable {
+	width := len("STACK")
+	for _, n := range targets {
+		if len(n) > width {
+			width = len(n)
+		}
+	}
+	return &scanTable{w: w, tty: tty, stack: width}
+}
+
+func (t *scanTable) header() {
+	_, _ = fmt.Fprintln(t.w, t.row("STACK", "RESULT", "SERVICES", "DETAIL"))
+}
+
+func (t *scanTable) checking(name string) {
+	if !t.tty {
+		return
+	}
+	_, _ = fmt.Fprintln(t.w, t.row(name, "checking...", "", ""))
+	t.pending = true
+}
+
+func (t *scanTable) result(name, result, services, detail string) {
+	if t.pending {
+		_, _ = fmt.Fprint(t.w, "\x1b[1A\r\x1b[2K")
+		t.pending = false
+	}
+	_, _ = fmt.Fprintln(t.w, t.row(name, result, services, detail))
+}
+
+func (t *scanTable) row(stack, result, services, detail string) string {
+	return strings.TrimRight(fmt.Sprintf("%-*s  %-*s  %-*s  %s",
+		t.stack, stack, scanResultCol, result, scanServicesCol, services, detail), " ")
+}
