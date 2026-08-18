@@ -33,6 +33,7 @@ type Server struct {
 	cfg        *config.Config
 	pipeline   job.Backend
 	checker    Checker
+	imager     Imager
 	docker     *compose.Runner
 	log        *slog.Logger
 	allowedUID uint32
@@ -51,6 +52,10 @@ type Checker interface {
 	Check(ctx context.Context, t *config.Target) (wire.CheckResult, error)
 }
 
+type Imager interface {
+	Images(ctx context.Context, t *config.Target) (wire.ImagesResult, error)
+}
+
 func NewServer(cfg *config.Config, backend job.Backend, log *slog.Logger) *Server {
 	s := &Server{
 		cfg:      cfg,
@@ -61,6 +66,9 @@ func NewServer(cfg *config.Config, backend job.Backend, log *slog.Logger) *Serve
 	}
 	if c, ok := backend.(Checker); ok {
 		s.checker = c
+	}
+	if i, ok := backend.(Imager); ok {
+		s.imager = i
 	}
 	return s
 }
@@ -140,6 +148,7 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST "+wire.ExecPath, s.handleExec)
 	mux.HandleFunc("POST "+wire.CheckPath, s.handleCheck)
+	mux.HandleFunc("POST "+wire.ImagesPath, s.handleImages)
 	mux.HandleFunc("GET "+wire.DiscoverPath, s.handleDiscover)
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 	return mux
@@ -312,6 +321,48 @@ func (s *Server) handleCheck(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(result)
 }
 
+func (s *Server) handleImages(w http.ResponseWriter, r *http.Request) {
+	if !s.authorisePeer(w, r) {
+		return
+	}
+	if s.imager == nil {
+		writeError(w, http.StatusNotImplemented, "this agent cannot resolve images")
+		return
+	}
+
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, wire.MaxBodyBytes))
+	if err != nil {
+		writeError(w, http.StatusRequestEntityTooLarge, "request body too large")
+		return
+	}
+
+	var req wire.ImagesRequest
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request: "+err.Error())
+		return
+	}
+
+	target, ok := s.cfg.Target(req.Target)
+	if !ok {
+		s.log.Warn("agent rejected unknown target", "target", clip(req.Target))
+		writeError(w, http.StatusNotFound, s.unknownTarget(req.Target))
+		return
+	}
+
+	result, err := s.imager.Images(r.Context(), target)
+	if err != nil {
+		s.log.Error("resolving images failed", "target", target.Name, "error", err)
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(result)
+}
+
 func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 	if !s.authorisePeer(w, r) {
 		return
@@ -369,6 +420,10 @@ func (s *streamSink) emit(e wire.Event) {
 		return
 	}
 	s.flusher.Flush()
+}
+
+func (s *streamSink) StartStep(name string) {
+	s.emit(wire.Event{Type: wire.EventStepStart, Step: &job.Step{Name: name, Running: true}})
 }
 
 func (s *streamSink) AddStep(step job.Step) { s.emit(wire.Event{Type: wire.EventStep, Step: &step}) }

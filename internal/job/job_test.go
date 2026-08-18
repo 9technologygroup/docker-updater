@@ -98,3 +98,52 @@ func TestSanitiseTruncates(t *testing.T) {
 		t.Errorf("length = %d, want it truncated to about 10", len(got))
 	}
 }
+
+func TestCompletedStepReplacesItsRunningPlaceholder(t *testing.T) {
+	s := NewStore()
+	j, _ := s.Begin("pmon", Request{})
+
+	j.StartStep("pull")
+	if steps := j.Snapshot().Steps; len(steps) != 1 || !steps[0].Running {
+		t.Fatalf("steps after StartStep = %+v, want one running step", steps)
+	}
+
+	j.AddStep(Step{Name: "pull", OK: true, Output: "pulled acme/web:2"})
+	j.StartStep("up")
+	j.AddStep(Step{Name: "up", OK: true})
+
+	steps := j.Snapshot().Steps
+	if len(steps) != 2 {
+		t.Fatalf("steps = %+v, want exactly two", steps)
+	}
+	if steps[0].Running || !steps[0].OK || steps[0].Output != "pulled acme/web:2" {
+		t.Errorf("step[0] = %+v, want the completed pull, not the placeholder", steps[0])
+	}
+	if steps[1].Name != "up" || steps[1].Running {
+		t.Errorf("step[1] = %+v", steps[1])
+	}
+}
+
+func TestUnfinishedStepIsResolvedWhenTheJobEnds(t *testing.T) {
+	s := NewStore()
+	j, _ := s.Begin("pmon", Request{})
+
+	j.AddStep(Step{Name: "pull", OK: true})
+	j.StartStep("up")
+	s.Complete(j, StateFailed, "the agent went away")
+
+	steps := j.Snapshot().Steps
+	if len(steps) != 2 {
+		t.Fatalf("steps = %+v, want exactly two", steps)
+	}
+	last := steps[1]
+	if last.Running {
+		t.Error("a step must not still report as running once the job is terminal")
+	}
+	if last.OK {
+		t.Error("a step that never reported back is not a success")
+	}
+	if last.Error != "did not complete" {
+		t.Errorf("error = %q, want %q", last.Error, "did not complete")
+	}
+}

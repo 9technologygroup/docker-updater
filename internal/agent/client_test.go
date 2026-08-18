@@ -8,12 +8,14 @@ import (
 )
 
 type captureSink struct {
+	started []string
 	steps   []job.Step
 	before  []job.ServiceState
 	after   []job.ServiceState
 	changed []string
 }
 
+func (c *captureSink) StartStep(name string)          { c.started = append(c.started, name) }
 func (c *captureSink) AddStep(s job.Step)             { c.steps = append(c.steps, s) }
 func (c *captureSink) SetBefore(s []job.ServiceState) { c.before = s }
 func (c *captureSink) SetAfter(s []job.ServiceState)  { c.after = s }
@@ -61,5 +63,55 @@ func TestClientTreatsTruncatedStreamAsFailure(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "mid-update") {
 		t.Errorf("error = %q, want it to warn the stack may be mid-update", err)
+	}
+}
+
+func TestClientTranslatesStepStartAndIgnoresUnknownEvents(t *testing.T) {
+	c := &Client{}
+
+	stream := strings.Join([]string{
+		`{"type":"step_start","step":{"name":"pull","running":true}}`,
+		`{"type":"step","step":{"name":"pull","ok":true}}`,
+		`{"type":"step_start","step":{"name":"up","running":true}}`,
+		`{"type":"something_a_newer_agent_sends","step":{"name":"noise"}}`,
+		`{"type":"step","step":{"name":"up","ok":true}}`,
+		`{"type":"result","state":"succeeded","message":"updated app"}`,
+	}, "\n")
+
+	sink := &captureSink{}
+	state, _, err := c.consume(strings.NewReader(stream), sink)
+	if err != nil {
+		t.Fatalf("consume: %v", err)
+	}
+	if state != job.StateSucceeded {
+		t.Errorf("state = %q, want succeeded", state)
+	}
+	if len(sink.started) != 2 || sink.started[0] != "pull" || sink.started[1] != "up" {
+		t.Errorf("started = %v, want [pull up]", sink.started)
+	}
+	if len(sink.steps) != 2 {
+		t.Fatalf("steps = %+v, want two", sink.steps)
+	}
+	for i, s := range sink.steps {
+		if s.Name != sink.started[i] {
+			t.Errorf("step %d named %q closes a start named %q", i, s.Name, sink.started[i])
+		}
+	}
+}
+
+func TestClientIgnoresAStepStartWithNoStep(t *testing.T) {
+	c := &Client{}
+
+	stream := strings.Join([]string{
+		`{"type":"step_start"}`,
+		`{"type":"result","state":"succeeded","message":"done"}`,
+	}, "\n")
+
+	sink := &captureSink{}
+	if _, _, err := c.consume(strings.NewReader(stream), sink); err != nil {
+		t.Fatalf("consume: %v", err)
+	}
+	if len(sink.started) != 0 {
+		t.Errorf("started = %v, want nothing", sink.started)
 	}
 }

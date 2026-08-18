@@ -137,6 +137,10 @@ func (c *Client) consume(body io.Reader, sink job.Sink) (job.State, string, erro
 		}
 
 		switch ev.Type {
+		case wire.EventStepStart:
+			if ev.Step != nil {
+				sink.StartStep(ev.Step.Name)
+			}
 		case wire.EventStep:
 			if ev.Step != nil {
 				sink.AddStep(*ev.Step)
@@ -184,6 +188,36 @@ func (c *Client) Check(ctx context.Context, target string) (wire.CheckResult, er
 	}
 	if err := json.Unmarshal(body, &result); err != nil {
 		return result, fmt.Errorf("could not read the agent's check result: %w", err)
+	}
+	return result, nil
+}
+
+func (c *Client) Images(ctx context.Context, target string) (wire.ImagesResult, error) {
+	var result wire.ImagesResult
+
+	payload, err := json.Marshal(wire.ImagesRequest{Target: target})
+	if err != nil {
+		return result, err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.url(wire.ImagesPath), bytes.NewReader(payload))
+	if err != nil {
+		return result, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return result, fmt.Errorf("could not reach the update agent on %s: %w", c.socket, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxDiscoverBytes))
+	if resp.StatusCode != http.StatusOK {
+		return result, fmt.Errorf("the update agent would not list the images for %q (%d): %s", target, resp.StatusCode, agentError(body))
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return result, fmt.Errorf("could not read the agent's image list: %w", err)
 	}
 	return result, nil
 }
