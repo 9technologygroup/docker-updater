@@ -83,24 +83,30 @@ Full install, configuration, usage and uninstall instructions are in **[DOCUMENT
 Every update takes the same path, whoever triggered it. Nothing is recreated until the new image is on disk and the pre-update hook has succeeded.
 
 ```mermaid
-flowchart TD
-    T["Trigger: webhook, CLI or schedule"] --> V{"compose config valid?"}
-    V -- no --> F["failed, nothing touched"]
-    V -- yes --> B["Record running containers and their image IDs"]
-    B --> P["docker compose pull"]
-    P --> D{"images changed?"}
-    D -- "no, and not --force" --> N["no_change"]
-    D -- yes --> H["pre_update hook, runs as root"]
-    H -- "non-zero and required" --> F
-    H -- ok --> U["docker compose up -d"]
-    U --> W{"healthy, and stable for stability_window?"}
-    W -- yes --> S["succeeded"]
-    W -- no --> R{"rollback enabled?"}
+flowchart LR
+    T(["Trigger"]) --> V{"compose<br/>config valid?"}
+    V -- yes --> P["snapshot running<br/>images, then pull"]
+    P --> D{"images<br/>changed?"}
+    D -- yes --> H{"pre_update<br/>hook ok?"}
+    H -- yes --> U["compose up -d"]
+    U --> W{"healthy, and<br/>stable for<br/>stability_window?"}
+    W -- yes --> S(["succeeded"])
+    W -- no --> R{"rollback<br/>enabled?"}
+    R -- yes --> RB["restore the previous<br/>image IDs"] --> RH{"healthy<br/>now?"}
+    RH -- yes --> RO(["rolled_back"])
+
+    V -- no --> F(["failed"])
+    D -- "no, and<br/>not --force" --> N(["no_change"])
+    H -- no --> F
     R -- no --> F
-    R -- yes --> RB["Re-tag previous image IDs and bring the stack back"]
-    RB --> RH{"healthy again?"}
-    RH -- yes --> RO["rolled_back"]
-    RH -- no --> RF["rollback_failed, needs a human"]
+    RH -- no --> RF(["rollback_failed"])
+
+    classDef ok fill:#e2efee,stroke:#0d6b68,color:#14191c
+    classDef bad fill:#f7e6e2,stroke:#a03020,color:#14191c
+    classDef warn fill:#fffbe6,stroke:#a86a14,color:#14191c
+    class S,N ok
+    class F,RF bad
+    class RO warn
 ```
 
 A service with no `HEALTHCHECK` counts as healthy, so for those `stability_window` is your only real signal. That trade-off is explained in [DOCUMENTATION.md](DOCUMENTATION.md#health-checks-and-what-healthy-means).
@@ -115,15 +121,6 @@ Two binaries, split so the half exposed to the network has no way to reach Docke
 |---|---|---|---|
 | `dup` | the `dup` system account | the agent's unix socket | HTTP API, auth, job store, scheduler, notifications |
 | `dup-agent` | `root` | Docker | runs `docker compose`, health checks, rollback |
-
-```mermaid
-flowchart LR
-    W["Webhook: n8n, GitHub"] -- HTTPS --> A
-    C["dup CLI"] -- HTTPS --> A
-    A["dup, unprivileged"] -- "unix socket, SO_PEERCRED" --> B["dup-agent, root"]
-    B -- "docker compose" --> D[("Your stacks")]
-    A -. "outbound notify" .-> N["Discord, n8n"]
-```
 
 <div align="center">
   <img src="docs/architecture.png" alt="dup architecture and privilege split" width="760">
