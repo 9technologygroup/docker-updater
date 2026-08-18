@@ -185,9 +185,10 @@ do the same thing. `dup <command> -h` prints that command's flags and exits 0.
 | `dup status [stack]` | Alias for `dup logs` |
 | `dup scan [stack]` | Check against the registry now, without updating anything |
 | `dup update <stack>` | Trigger an update |
-| `dup check` | Validate the config, and warn if the running agent has a different one |
+| `dup check` | Validate the config, warn if the running agent has a different one, and report which stacks have registry credentials of their own |
 | `dup audit` | Prove the service account cannot rewrite what runs as root |
 | `dup cert` | Generate the self-signed TLS certificate. Root only |
+| `dup auth [stack]` | Store a stack's own registry credentials. Root only |
 | `dup version` | Version, commit, and whether a newer release is out |
 | `dup serve` | The unprivileged HTTP API. systemd runs this |
 | `dup-agent` | The privileged agent. systemd runs this |
@@ -204,14 +205,17 @@ waiting to apply, and what is quietly drifting outside it".
 | `update` | `--reason` | none | Free text recorded on the job, so `dup logs` says why |
 | `update` | `--dry-run` | `false` | Pull and report what would change, recreating nothing |
 | `update` | `--force` | `false` | Recreate even when the images have not changed. For a container misbehaving on the image it is already on |
-| `update` | `--wait` | `4m` | How long to wait for the result. Clamped to the 5m the API will hold a request open |
+| `update` | `--wait` | `4m` | How long to follow the update before leaving it to finish on its own. Clamped to 5m, the longest the API will hold a request open |
 | `logs` | `--limit` | `20` | How many jobs to show |
-| `logs` | `--job` | none | Show one job in full, with every step and its output. A prefix of the id is enough |
+| `logs` | `--job` | none | Show one job in full: every step, and the last 12 lines of output from any step that failed. A prefix of the id is enough |
 | `logs` | `--full` | `false` | Show every step of each job, not just the summary |
 | `scan` | `--timeout` | `15m` | Budget for the whole scan across every stack |
 | `list` | `--all` | `false` | Also list compose projects dup already covers |
 | `cert` | `--force` | `false` | Replace an existing certificate |
 | `cert` | `--defaults` | `false` | Generate at the default paths without reading a config, which is what the installer uses on a fresh host |
+| `auth` | `--list` | `false` | List what is stored: stack, registry host, username and when that stack's store was last written. Never the secret |
+| `auth` | `--remove` | none | Remove one registry host from a stack's store. Needs a stack name |
+| `auth` | `--force` | `false` | Re-enter credentials for a host that already has them |
 | `version` | `--full` | `false` | Add commit, build date, toolchain, licence, source and the latest release |
 | `version` | `--check` | `false` | Check for a newer release now, ignoring the cache |
 | `version` | `--no-check` | `false` | Skip the release check entirely |
@@ -223,7 +227,7 @@ waiting to apply, and what is quietly drifting outside it".
 | Code | When |
 |---|---|
 | `0` | Success, including a dry run, a `no_change`, and asking for help |
-| `1` | Anything else: a failed update, a rolled-back update, an unreachable API or agent, an invalid config, a stack that could not be scanned |
+| `1` | Anything else: a failed update, a rolled-back update, an unreachable API or agent, an invalid config, a stack that could not be scanned, a `dup auth` that did not save every credential it prompted for |
 
 An update that is still running when `--wait` expires exits `0` and tells you to follow it
 with `dup logs`, because it has not failed.
@@ -258,7 +262,7 @@ setting that silently does nothing.
 | Key | Default | Meaning |
 |---|---|---|
 | `listen` | `127.0.0.1:7788` | Address the API binds. Off-loopback without TLS is refused unless `allow_non_loopback` |
-| `allow_non_loopback` | `false` | Permit plaintext on a non-loopback address. dup complains in the log if you do |
+| `allow_non_loopback` | `false` | Permit plaintext on a non-loopback address. Without it that combination is refused at startup, which keeps both units down |
 | `agent_socket` | `/run/dup/agent.sock` | Unix socket to the privileged agent. Absolute, and under 100 bytes because that is the kernel limit |
 | `agent_peer_user` | none, required | The account the API runs as. The agent accepts connections only from this uid and root |
 | `log_level` | `info` | `debug`, `info`, `warn` or `error` |
@@ -268,6 +272,7 @@ setting that silently does nothing.
 | `history_file` | `/var/lib/dup/history.jsonl` | Durable record of finished updates, which is what `dup logs` reads. `none` disables |
 | `history_max_size_mb` | `8` | Rotate the history at this size |
 | `history_keep` | `4` | Gzipped history archives to keep |
+| `docker_config_dir` | `/etc/dup/docker` | Base for per-stack registry credentials, one directory per stack. Absolute, and not a top level directory. See [Private registries](#private-registries) |
 
 The agent writes its own log beside yours, at `/var/log/dup-agent/dup-agent.log`, in a
 separate directory so the unprivileged account cannot rewrite the root process's record.
@@ -401,6 +406,8 @@ history_file: /var/lib/dup/history.jsonl
 history_max_size_mb: 8
 history_keep: 4
 
+docker_config_dir: /etc/dup/docker
+
 tls:
   enabled: true
   self_signed: true
@@ -462,7 +469,122 @@ targets:
 
 ### Private registries
 
-`sudo docker login` and you are done. Nothing in dup needs configuring.
+There are two places docker can find credentials for a stack, and dup uses either:
+
+| | Where the credentials live | What it covers |
+|---|---|---|
+| `sudo dup auth <stack>` | `/etc/dup/docker/<stack>/config.json`, readable only by root | That one stack |
+| `sudo docker login` | `/root/.docker/config.json` | Every stack that has no store of its own |
+
+**Nothing changes on upgrade.** A stack uses a store of its own only once one exists, so a
+host that has never run `dup auth` reads root's docker config exactly as it did before.
+
+**Why per stack rather than per registry.** A docker `config.json` keys its `auths` map by
+registry host, so one file cannot hold two accounts for the same registry. Two stacks
+pulling from the same registry as different robot accounts is ordinary, and giving each
+stack its own docker config directory is the only arrangement that expresses it. It also
+means a credential is scoped to the one stack that needs it rather than to the whole host.
+
+### Storing registry credentials
+
+```bash
+sudo dup auth              # every configured stack
+sudo dup auth patchmon     # one of them
+```
+
+dup asks the agent which registries that stack's images come from, so you never have to
+type a hostname. Then it prompts for a username, and for a password with terminal echo off,
+and **verifies the pair against the registry before writing anything**:
+
+```
+$ sudo dup auth patchmon
+patchmon
+  registry.example.com
+    username: robot$dup
+    password:
+    saved
+```
+
+A wrong password is rejected at the prompt and nothing is stored. A registry that could not
+be reached is reported differently, and again nothing is stored, because "we could not ask"
+is not the same answer as "no".
+
+Worth knowing before you build anything around it:
+
+- It **must run as root**, and says so before prompting or writing rather than after. The
+  store is root-owned by design, and that includes `--list` and `--remove`.
+- Adding a credential needs a real terminal. With stdin redirected it refuses rather than
+  reading a password from a pipe. `--list` and `--remove` do not prompt, so they are fine in
+  a script, as long as it runs as root.
+- A registry that already has credentials stored is skipped. `--force` re-enters them.
+- Verification is HTTPS only. dup will not follow a redirect onto another host, and will not
+  use a token endpoint served over plain HTTP, so nothing a registry answers can walk your
+  password somewhere else.
+- If the agent cannot be reached, dup asks you for one registry host by hand instead of
+  giving up.
+
+To see what is stored, or to take it back out:
+
+```bash
+sudo dup auth --list                                  # every stack
+sudo dup auth patchmon --list                         # one of them
+sudo dup auth patchmon --remove registry.example.com
+```
+
+`--list` shows where a credential is stored and who it belongs to, never the secret:
+
+```
+STACK     HOST                  USERNAME   ADDED
+patchmon  registry.example.com  robot$dup  18 Aug 21:04
+```
+
+`ADDED` is when that stack's store was last written, so every row for a stack carries the
+same time. `--remove` needs a stack name, since the same host can appear under several.
+Removing the last host for a stack deletes its `config.json`, and the stack goes back to
+using root's docker config.
+
+### Where registry credentials live
+
+| Path | Owner | Mode |
+|---|---|---|
+| `/etc/dup/docker/` | `root:root` | `0700` |
+| `/etc/dup/docker/<stack>/` | `root:root` | `0700` |
+| `/etc/dup/docker/<stack>/config.json` | `root:root` | `0600` |
+
+`/etc/dup` itself is `root:dup 0750`, and a `0700 root:root` directory inside it stops the
+group there. **The API service cannot read any of it**, which is the point: the half of dup
+that is reachable from the network has no access to a registry password, and never needs
+one.
+
+`docker_config_dir` moves the base somewhere else. It must be absolute, and dup refuses a
+top level path such as `/creds` rather than tightening the mode on something that broad.
+Note that `install.sh --uninstall --purge` removes `/etc/dup` outright, credential store
+included, while an uninstall without `--purge` leaves it.
+
+The credentials are written in docker's own format, an `auths` map holding
+`base64(username:password)`, byte for byte what `docker login` itself writes. **That is
+encoding, not encryption.** What protects them is the ownership and the mode above.
+
+**What the agent does with them.** When it runs docker for a stack, the agent sets
+`DOCKER_CONFIG` to that stack's directory, and only when that directory actually holds a
+`config.json`. Otherwise it sets nothing, and docker reads whatever the agent's own
+environment points at, or `/root/.docker/config.json`.
+
+That also makes the store the only place docker looks for that stack. If a stack pulls from
+two private registries, both belong in its store; `dup auth` walks every registry it finds
+in that stack's images, so one run covers them all. Registries are discovered from the image
+references themselves, and a Docker Hub image such as `nginx:1.27` names no registry, so it
+is never listed. A stack that pulls only from Docker Hub therefore has nothing for
+`dup auth` to store, and keeps using root's docker config.
+
+Worth thinking about if a stack pulls from both: once it has a store of its own, root's
+Docker Hub login no longer applies to it, so those pulls go out anonymous and get the lower
+rate limit.
+
+### Logging in as root instead
+
+`sudo docker login` still works and is still the simpler answer when one account covers the
+whole host.
 
 ```bash
 sudo docker login ghcr.io
@@ -478,7 +600,8 @@ Three parts of the design make this work, and are worth knowing before anyone "h
 them into a broken state:
 
 - `HOME` and `DOCKER_CONFIG` are passed through to the docker CLI. The child environment is
-  an explicit allowlist, so anything not on it is dropped.
+  an explicit allowlist, so anything not on it is dropped. A stack with its own store
+  overrides the inherited `DOCKER_CONFIG` rather than adding a second one.
 - `ProtectHome=read-only` on the agent unit, rather than `true`, is what lets it read
   `/root/.docker`. This is already called out in the hardening notes.
 - `ProtectSystem=full` leaves `/usr` readable and executable, so credential helper binaries
@@ -491,16 +614,21 @@ unlocked keyring and a DBus session. A systemd service has neither, so pulls fai
 though `docker pull` works fine in your shell. Use a plain `config.json`, or a helper that
 authenticates from instance metadata such as `docker-credential-ecr-login`.
 
-**Logging in through dup.** `ProtectHome=read-only` means the agent cannot write
-`/root/.docker`, deliberately. Run `docker login` yourself; dup only ever reads.
+**Writing root's docker config through dup.** `ProtectSystem=full` and
+`ProtectHome=read-only` mean the agent cannot write `/etc` or `/root/.docker`, deliberately.
+`dup auth` is not an exception to that: it is a command you run yourself as root, outside
+both units, and it writes only its own store under `docker_config_dir`. Nothing in dup ever
+edits `/root/.docker/config.json`.
 
-To keep credentials somewhere else, set `DOCKER_CONFIG` in the agent's environment rather
-than in your shell, since the agent does not inherit your session:
+To keep a host-wide docker config somewhere else, set `DOCKER_CONFIG` in the agent's
+environment rather than in your shell, since the agent does not inherit your session. Point
+it at its own directory, not at `docker_config_dir`, which holds one subdirectory per stack
+rather than a `config.json`:
 
 ```ini
 # /etc/systemd/system/dup-agent.service.d/registry.conf
 [Service]
-Environment=DOCKER_CONFIG=/etc/dup/docker
+Environment=DOCKER_CONFIG=/etc/docker-credentials
 ```
 
 Worth doing even for public images: an authenticated Docker Hub pull gets a much higher
@@ -608,7 +736,7 @@ Three options. dup does not care which you pick, but it will not serve plaintext
 |---|---|---|
 | **dup terminates TLS itself** (default) | Always, unless you have a reason not to. dup manages the proxy's own stack, or you do not want a proxy in the path at all | What the reference config ships with. Or point `tls.cert_file`/`key_file` at a wildcard you already have and set `self_signed: false` |
 | **Loopback + reverse proxy** | You already run NPM, Caddy or Traefik and would rather it held the certificate | `listen: "127.0.0.1:7788"` and `tls.enabled: false` |
-| **Plaintext on the network** | Never, unless something else is doing the encrypting | `allow_non_loopback: true`, and dup will complain in the log |
+| **Plaintext on the network** | Never, unless something else is doing the encrypting | `allow_non_loopback: true`. Without it dup refuses to start, and `dup-agent.service` runs `dup check` as `ExecStartPre`, so both units stay down |
 
 If you put a reverse proxy in front while dup is still terminating TLS, the proxy talks
 HTTPS to a self-signed backend over loopback. In Nginx Proxy Manager that means setting
@@ -722,7 +850,7 @@ curl -X POST \
 Body fields, all optional: `tag`, `reason`, `dry_run`, `force`. `tag` is refused unless the
 target sets `image_tag_env`.
 
-`?wait=` blocks for up to 5 minutes and returns the finished job. Without it you get `202` immediately and poll `/v1/jobs/{id}`. With `wait`, a finished job returns `200` when it went well and `500` when it did not, so an n8n error branch works without inspecting the body.
+`?wait=` blocks for up to 5 minutes and returns the finished job. Without it you get `202` immediately and poll `/v1/jobs/{id}`, which is what the CLI does so it can show progress while the job runs. With `wait`, a finished job returns `200` when it went well and `500` when it did not, so an n8n error branch works without inspecting the body.
 
 ### Testing it locally
 
@@ -897,13 +1025,75 @@ does not shortcut a soak: an auto-update stack still waits out its window.
 from the image it is already on. Without it, an update with nothing new to pull and a
 healthy stack finishes as `no_change` and leaves everything alone.
 
+### Watching it run
+
+`dup update` does not sit there silently. It starts the job, gets a job id back, and then
+follows it: the step currently running is marked `...` with an elapsed time that counts up,
+and flips to `ok` or `FAILED` with its final duration the moment that step finishes.
+
+On a terminal the block is redrawn in place, so what you are looking at is always the
+current state and nothing scrolls:
+
+```
+quackback  running
+  job 18c4fe391aeb4dfd in 12.4s
+    validate                 ok     300ms
+    pull                     ...    2.8s
+```
+
+Piped or redirected there is no ANSI at all, and no redrawing. Each step is printed once, on
+its own line, as it completes, which is what makes it readable in a log or in CI:
+
+```
+quackback  job 18c4fe391aeb4dfd started
+    validate                 ok     300ms
+    pull                     ok     58.2s
+    up                       ok     6.0s
+quackback  succeeded
+  updated app
+  changed: app
+  job 18c4fe391aeb4dfd in 1m10.008s
+```
+
+**A step that fails shows why it failed.** `exec` reports nothing more useful than "exit
+status 1", so the step's error and the output the command produced are both printed
+underneath it, indented:
+
+```
+quackback  job 18c4fe391aeb4dfd started
+    pull                     FAILED 2.1s
+      manifest unknown
+quackback  failed
+  pull failed
+  job 18c4fe391aeb4dfd in 2.4s
+```
+
+At most the last 12 lines of that output are shown, with a `...N earlier lines` marker when
+there were more. Steps that succeeded never print their output, and compose's per-image
+progress chatter is dropped, so what is left is the part that explains the failure.
+`dup logs --job <id>` shows the same detail for a job that finished earlier.
+
+`--wait` is a budget for how long to follow, not a deadline for the update. When it runs out
+the command tells you the job is still going and exits `0`, because it has not failed:
+the agent owns the update's lifetime, not your terminal.
+
+`dup scan` prints a stack's row the moment that stack's check comes back, rather than
+holding the whole table until the end. On a terminal the stack being checked shows
+`checking...` and is rewritten in place when its answer arrives:
+
+```
+STACK      RESULT            SERVICES                  DETAIL
+quackback  update available  app                       app: new image
+web        up to date        -
+```
+
 ### Seeing what is going on
 
 ```bash
 dup list              # policy, when each stack is next checked, and anything mid-flight
 dup logs              # every finished update, from disk, so it survives a restart
 dup logs app          # just that stack
-dup logs --job 5a07b34b   # one job with every step and its output, prefix is enough
+dup logs --job 5a07b34b   # one job with every step, and any failed step's output
 dup logs --full       # every step of each job in the list
 ```
 
@@ -914,16 +1104,16 @@ is an alias for `dup logs`, kept so existing scripts keep working.
 without knowing what time the scheduler thinks it is:
 
 ```
-dup 1.0.0  4 stacks configured, 2 on auto update
+dup 1.0.0  2 stacks configured, 1 on auto update
 api https://127.0.0.1:7788   inbound token, github   outbound none
 server time Tue 18 Aug 2026 18:26:48 BST
 
-STACK  AUTO  EVERY  NEXT  SOAK  ROLLBACK  SERVICES  DIR
-app    yes   6h     2h14m 30m   yes       all       /opt/app
-db     no    -      -     -     yes       all       /opt/db
+STACK  CHECK  NEXT   SOAK  RB  SERVICES  DIR
+app    6h     2h14m  30m   on  all       /opt/app
+db     -      -      -     on  all       /opt/db
 
 In flight
-  app   update waiting out its soak   applies 18:36:48 (in 10m)   new image for web
+  app  update waiting out its soak  applies 18:36:48 (in 10m)  new image for web
 ```
 
 `NEXT` is when that stack is next checked against its registry. The first check after a
@@ -979,17 +1169,57 @@ join the group once:
 sudo usermod -aG dup $USER   # then log out and back in
 ```
 
-### A pull fails on a private registry
+### A pull fails with 401, or "unauthorized"
 
-Log in **as root**, because the agent runs as root and reads `/root/.docker/config.json`.
-Credentials written to your own home are never seen. See
-[Private registries](#private-registries).
+dup runs docker as root, so a `docker login` you ran as your own user is never seen: those
+credentials went to your home directory, and the agent reads root's.
+
+dup does not dump the whole pull at you. It reads compose's output and names only the images
+that actually errored, with the reason, and when it was the credentials it names the registry
+that refused them:
+
+```
+docker compose pull failed
+
+  registry.example.com/provisioner:latest
+    401 Unauthorized
+
+  registry.example.com rejected the credentials. dup runs docker as root, so a docker login
+  you ran as your own user does not apply to it. Give this stack its own
+  registry credentials with:
+
+    sudo dup auth patchmon
+
+  The other 9 images pulled or were cancelled, and are not the problem.
+```
+
+`dup scan` prints that under its table, behind the status prefixes the API and the agent add
+on the way back. On an update it is condensed to one line, which is what `dup logs` and the
+notify payload carry:
+
+```
+pull failed: registry.example.com/provisioner:latest returned 401 Unauthorized. Run: sudo dup auth patchmon
+```
+
+Either way, give that stack its own credentials:
+
+```bash
+sudo dup auth patchmon
+```
+
+Or log in as root, if one account covers the whole host:
+
+```bash
+sudo docker login registry.example.com
+```
+
+[Private registries](#private-registries) explains which to reach for.
 
 ### Where to look
 
 ```bash
 sudo dup logs                 # every finished update, newest first
-sudo dup logs --job <id>      # one job with every step and its output
+sudo dup logs --job <id>      # one job with every step, and any failed step's output
 journalctl -u dup -u dup-agent -f
 tail -f /var/log/dup/dup.log
 tail -f /var/log/dup-agent/dup-agent.log

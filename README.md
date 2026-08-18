@@ -24,7 +24,7 @@ Trigger it from a webhook (n8n, a GitHub release, anything that can POST), from 
 
 ```
 $ dup list
-dup 1.0.0  4 stacks configured, 2 on auto update
+dup 1.0.0  3 stacks configured, 2 on auto update
 api https://127.0.0.1:7788   inbound token, github   outbound https://n8n.example.com/webhook/dup
 server time Tue 18 Aug 2026 20:13:27 BST
 
@@ -50,6 +50,8 @@ The caller names a **stack**, never a path and never a command. Everything else 
 - **A privileged agent you can actually reason about.** The network-facing half runs unprivileged with no Docker access at all. CI fails the build if it so much as links a package capable of executing `docker`.
 - **Rollback that has been thought through.** It restores the previous image IDs, re-checks health, and tells you plainly when it could not, rather than reporting success and leaving you broken.
 - **A soak, not a hair trigger.** A new image is recorded and applied only if it is still there after the soak window, so a tag pushed and pulled back within the hour never reaches you.
+- **You can watch it work.** `dup update` shows each step as it runs, with a live timer, and prints the output of a step that failed rather than leaving you with "exit status 1". Redirected into a log there is no ANSI at all, just one line per step as it finishes.
+- **Registry credentials per stack, not per host.** `sudo dup auth <stack>` verifies a username and password against the registry, then stores them `root:root 0600` where the network-facing service cannot read them. Two stacks can use different accounts on the same registry. A plain `sudo docker login` as root still works if that is all you need.
 - **It tells you what it is not covering.** `dup list` enumerates every Compose project and loose container on the host that sits outside dup's control, because the dangerous stack is the one nobody is watching.
 - **Two dependencies.** `gopkg.in/yaml.v3` and `golang.org/x/sys`. Everything else is the standard library.
 
