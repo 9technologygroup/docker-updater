@@ -37,8 +37,12 @@ func runCheck(args []string) error {
 		}
 	}
 
-	fmt.Printf("config ok: %d %s (%d on auto update)\n",
-		len(cfg.Targets), plural(len(cfg.Targets), "stack", "stacks"), auto)
+	if len(cfg.Targets) == 0 {
+		fmt.Printf("config ok: no stacks configured yet\n")
+	} else {
+		fmt.Printf("config ok: %d %s (%d on auto update)\n",
+			len(cfg.Targets), plural(len(cfg.Targets), "stack", "stacks"), auto)
+	}
 	fmt.Printf("  api          %s\n", apiURL(cfg))
 	fmt.Printf("  agent socket %s\n", cfg.AgentSocket)
 	fmt.Printf("  allow from   %s\n", joinOr(cfg.AllowFrom, "anywhere that can reach the port"))
@@ -58,6 +62,12 @@ func runCheck(args []string) error {
 	}
 
 	printWarnings(cfg)
+	if len(cfg.Targets) == 0 {
+		fmt.Printf("\ndup is not managing anything yet. See what is on this host:\n\n")
+		fmt.Printf("  sudo dup list\n\n")
+		fmt.Printf("Then add stacks under 'targets:' in the config, and re-run this\n")
+		fmt.Printf("and 'sudo dup audit' before restarting.\n")
+	}
 	return nil
 }
 

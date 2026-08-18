@@ -43,6 +43,9 @@ done
 # before anyone copies it into place. An existing certificate is never touched.
 if [ ! -f /etc/dup/config.yml ] && [ -x /usr/bin/dup ]; then
     /usr/bin/dup cert --defaults >/dev/null 2>&1 || true
+    cp /etc/dup/config.example.yml /etc/dup/config.yml
+    chown root:dup /etc/dup/config.yml
+    chmod 0640 /etc/dup/config.yml
 fi
 
 if command -v systemctl >/dev/null 2>&1; then
@@ -66,31 +69,26 @@ BANNER
 else
     cat <<'BANNER'
 
-dup installed. Nothing is running yet, because there is no config.
+dup installed. A starter config is at /etc/dup/config.yml with no stacks in it,
+and HTTPS is already set up, so there is nothing to edit before starting.
 
-Next steps, in this order
-
-  1. Copy the reference config and edit it for this host:
-       sudo cp /etc/dup/config.example.yml /etc/dup/config.yml
-       sudo chown root:dup /etc/dup/config.yml && sudo chmod 0640 /etc/dup/config.yml
-       sudo nano /etc/dup/config.yml          # or vim, or whatever you use
-
-     TLS is on in the reference config and the certificate is already
-     generated at /etc/dup/self-signed.crt, so HTTPS needs nothing from you.
-     To turn it off, set 'self_signed: false' under tls.
-
-  2. Validate the config:
-       sudo dup check
-
-  3. Prove the dup account cannot rewrite what runs as root:
-       sudo dup audit
-
-  4. Start it:
+  1. Start it:
        sudo systemctl enable --now dup-agent dup
 
-  5. Confirm it is up:
-       systemctl status dup-agent dup
-       dup list
+  2. See every compose project and container on this host:
+       sudo dup list
+
+  3. Add the ones you want under 'targets:' in /etc/dup/config.yml. The file
+     has a fully commented example showing every field:
+       sudo nano /etc/dup/config.yml          # or vim, or whatever you use
+
+  4. Validate, and prove the dup account cannot rewrite what runs as root.
+     The audit only means something once real stacks are listed:
+       sudo dup check
+       sudo dup audit
+
+  5. Apply:
+       sudo systemctl restart dup-agent dup
 
   bearer token:  sudo cat /etc/dup/bearer.token
   docs:          https://github.com/9technologygroup/docker-updater

@@ -459,10 +459,9 @@ func (c *Config) validateNotify() error {
 	return nil
 }
 
+// A config with no targets is valid. dup still enumerates what is on the host,
+// which is how you decide what to put under its control in the first place.
 func (c *Config) validateTargets(checkPaths bool) error {
-	if len(c.Targets) == 0 {
-		return fmt.Errorf("targets: at least one target must be configured")
-	}
 	c.byName = make(map[string]*Target, len(c.Targets))
 
 	for i, t := range c.Targets {

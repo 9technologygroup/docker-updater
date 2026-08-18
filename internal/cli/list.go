@@ -55,8 +55,12 @@ func runList(args []string) error {
 
 func printHeader(cfg *config.Config) {
 	auto := len(cfg.AutoUpdateTargets())
-	fmt.Printf("dup %s  %d %s configured, %d on auto update\n",
-		version.Short(), len(cfg.Targets), plural(len(cfg.Targets), "stack", "stacks"), auto)
+	if len(cfg.Targets) == 0 {
+		fmt.Printf("dup %s  no stacks configured\n", version.Short())
+	} else {
+		fmt.Printf("dup %s  %d %s configured, %d on auto update\n",
+			version.Short(), len(cfg.Targets), plural(len(cfg.Targets), "stack", "stacks"), auto)
+	}
 
 	outbound := cfg.Notify.URL
 	if outbound == "" {
@@ -67,6 +71,10 @@ func printHeader(cfg *config.Config) {
 }
 
 func printTargets(cfg *config.Config) {
+	if len(cfg.Targets) == 0 {
+		fmt.Printf("No stacks configured yet. Everything below is a candidate.\n")
+		return
+	}
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	_, _ = fmt.Fprintln(w, "STACK\tAUTO\tEVERY\tSOAK\tROLLBACK\tSERVICES\tDIR")
 

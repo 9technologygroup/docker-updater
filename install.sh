@@ -22,6 +22,7 @@ SRC_DIR="$(cd "$(dirname "$0")" 2>/dev/null && pwd || echo .)"
 DOWNLOAD_DIR=""
 BUILD_DIR=""
 SECRETS_GENERATED=no
+CREATED_CONFIG=no
 
 log()  { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m!!\033[0m %s\n' "$*" >&2; }
@@ -400,6 +401,12 @@ EXAMPLE_FILE="${CONF_DIR}/config.example.yml"
 install -m 0640 -o root -g "${SVC_USER}" "${SRC_DIR}/deploy/config.example.yml" "${EXAMPLE_FILE}"
 log "installed reference config to ${EXAMPLE_FILE}"
 
+if [ ! -f "${CONF_FILE}" ]; then
+    install -m 0640 -o root -g "${SVC_USER}" "${SRC_DIR}/deploy/config.example.yml" "${CONF_FILE}"
+    CREATED_CONFIG=yes
+    log "created ${CONF_FILE} with no stacks yet"
+fi
+
 # ------------------------------------------------------------- tls by default
 
 # The reference config ships with self_signed: true, so the pair has to exist
@@ -477,61 +484,6 @@ systemctl daemon-reload
 
 DUP_VER="$(DUP_NO_UPDATE_CHECK=1 "${BIN_DIR}/${API_BIN}" version 2>/dev/null || echo dup)"
 
-# ------------------------------------------------------- fresh install, no config
-
-if [ ! -f "${CONF_FILE}" ]; then
-    echo
-    log "${DUP_VER} installed. Nothing is running yet, because there is no config."
-    echo
-    echo "  binaries      ${BIN_DIR}/${API_BIN}, ${BIN_DIR}/${AGENT_BIN}"
-    echo "  units         ${API_BIN}.service, ${AGENT_BIN}.service  (installed, not enabled)"
-    echo "  config dir    ${CONF_DIR}  (root:${SVC_USER} 0750)"
-    echo "  reference     ${EXAMPLE_FILE}"
-    echo "  tls cert      ${CONF_DIR}/self-signed.crt  (generated, TLS is on by default)"
-    echo "  bearer token  ${TOKEN_FILE}"
-    echo "  github secret ${GH_SECRET_FILE}"
-    echo
-    echo "Next steps, in this order"
-    echo
-    echo "  1. Copy the reference config and edit it so the stacks match this host."
-    echo "     Every stack needs a name and the directory its compose file lives in."
-    echo
-    echo "       sudo cp ${EXAMPLE_FILE} ${CONF_FILE}"
-    echo "       sudo chown root:${SVC_USER} ${CONF_FILE} && sudo chmod 0640 ${CONF_FILE}"
-    echo "       sudo nano ${CONF_FILE}          # or vim, or whatever you use"
-    echo
-    echo "     TLS is already on in the reference config, and the certificate above"
-    echo "     is already generated, so there is nothing to do for HTTPS. To turn it"
-    echo "     off, set 'self_signed: false' under tls."
-    echo
-    echo "  2. Check the config parses and matches this host."
-    echo
-    echo "       sudo ${API_BIN} check"
-    echo
-    echo "  3. Prove the ${SVC_USER} account cannot rewrite anything that runs as root."
-    echo "     This must pass, or the privilege split buys you nothing."
-    echo
-    echo "       sudo ${API_BIN} audit"
-    echo
-    echo "  4. Start it."
-    echo
-    echo "       sudo systemctl enable --now ${AGENT_BIN} ${API_BIN}"
-    echo
-    echo "  5. Confirm it is up."
-    echo
-    echo "       systemctl status ${AGENT_BIN} ${API_BIN}"
-    echo "       ${API_BIN} list"
-    echo
-    echo "  bearer token   $(cat "${TOKEN_FILE}")"
-    echo "  github secret  $(cat "${GH_SECRET_FILE}")"
-    echo
-    echo "  Re-running this installer later upgrades the binaries and leaves your"
-    echo "  config and secrets untouched. To remove dup:"
-    echo
-    echo "    sudo ${SHARE_DIR}/install.sh --uninstall"
-    echo
-    exit 0
-fi
 
 # ----------------------------------------------------------------- start
 
@@ -593,10 +545,39 @@ echo "  ${API_BIN} list                 stacks, update policy, and what is not c
 echo "  ${API_BIN} status               recent update jobs"
 echo "  ${API_BIN} version --full       version, latest release, licence, source"
 echo
-echo "Try an update without changing anything"
-echo
-echo "  sudo ${API_BIN} update <stack> --dry-run"
-echo
+if [ "${CREATED_CONFIG}" = "yes" ]; then
+    echo "dup is running but managing nothing yet, which is the point: it can now"
+    echo "show you what is on this host."
+    echo
+    echo "  1. See every compose project and container dup is not covering."
+    echo
+    echo "       sudo ${API_BIN} list"
+    echo
+    echo "  2. Add the ones you want under 'targets:' in ${CONF_FILE}."
+    echo "     The file has a fully commented example showing every field."
+    echo
+    echo "       sudo nano ${CONF_FILE}          # or vim, or whatever you use"
+    echo
+    echo "  3. Validate, and prove the ${SVC_USER} account cannot rewrite what runs"
+    echo "     as root. The audit only means something once real stacks are listed."
+    echo
+    echo "       sudo ${API_BIN} check"
+    echo "       sudo ${API_BIN} audit"
+    echo
+    echo "  4. Apply."
+    echo
+    echo "       sudo systemctl restart ${AGENT_BIN} ${API_BIN}"
+    echo
+    echo "  5. Try one without changing anything."
+    echo
+    echo "       sudo ${API_BIN} update <stack> --dry-run"
+    echo
+else
+    echo "Try an update without changing anything"
+    echo
+    echo "  sudo ${API_BIN} update <stack> --dry-run"
+    echo
+fi
 if [ "${SECRETS_GENERATED}" = "yes" ]; then
     echo "  bearer token   $(cat "${TOKEN_FILE}")"
     echo "  github secret  $(cat "${GH_SECRET_FILE}")"
@@ -627,4 +608,6 @@ if [ "${SCHEME}" = "https" ]; then
     echo "    name. In NPM, tick 'Ignore Invalid SSL' on the Advanced tab, or import"
     echo "    ${CONF_DIR}/self-signed.crt. The hop is over loopback either way."
 fi
+echo
+echo "  To remove dup:  sudo ${SHARE_DIR}/install.sh --uninstall"
 echo

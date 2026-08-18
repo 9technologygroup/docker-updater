@@ -43,29 +43,64 @@ notify:
   timeout: 15s
   headers: {}
 
-targets:
-  - name: example
-    dir: /opt/example
-    compose_file: docker-compose.yml
+# No stacks yet, so dup starts and manages nothing. That is deliberate: run
+#
+#   sudo dup list
+#
+# to see every compose project and loose container on this host, then add the
+# ones you want dup to update. After editing, run 'sudo dup check' and
+# 'sudo dup audit', then 'sudo systemctl restart dup-agent dup'. The audit is
+# the one that proves the dup account cannot rewrite what the root agent runs,
+# and it only means something once you have real stacks here.
+targets: []
 
-  - name: example-auto
-    dir: /opt/example-auto
-    compose_file: docker-compose.yml
-    auto_update: true
-    check_interval: 6h
-    soak: 30m
-
-  - name: example-with-backup
-    dir: /opt/example-db
-    compose_file: docker-compose.yml
-    pre_update:
-      command: /usr/local/bin/backup-example-db
-      timeout: 15m
-      required: true
-
-  - name: example-pinned
-    dir: /opt/example-pinned
-    compose_file: docker-compose.yml
-    image_tag_env: APP_VERSION
-    services: [app]
-    health_timeout: 5m
+# Uncomment and adapt. Only name and dir are required; everything else has a
+# sensible default and can be left out entirely.
+#
+# targets:
+#   - name: app                      # required, [a-z0-9][a-z0-9._-]*, how you refer to it
+#     dir: /opt/app                  # required, absolute path holding the compose file
+#
+#     compose_file: docker-compose.yml   # optional, bare filename inside dir
+#                                        #   default: the first compose.yaml,
+#                                        #   compose.yml, docker-compose.yaml or
+#                                        #   docker-compose.yml found in dir
+#     env_file: .env                 # optional, bare filename inside dir
+#     services: [web, worker]        # optional, default: every service in the stack
+#
+#     auto_update: true              # optional, default false. Poll and update
+#                                    #   without being asked
+#     check_interval: 6h             # optional, default 6h, minimum 1m. Only used
+#                                    #   when auto_update is true
+#     soak: 30m                      # optional, default 30m. How long a new image
+#                                    #   must have been available before it is
+#                                    #   applied. 0 applies immediately
+#
+#     rollback: true                 # optional, default true. Restore the previous
+#                                    #   images if the update does not come up
+#     health_timeout: 3m             # optional, default 3m. How long to wait for
+#                                    #   services to settle before giving up
+#     stability_window: 15s          # optional, default 15s, must be shorter than
+#                                    #   health_timeout. How long they must stay
+#                                    #   settled. This is what catches a container
+#                                    #   that starts and then dies, and it is your
+#                                    #   only real signal for services with no
+#                                    #   HEALTHCHECK, since dup counts "no
+#                                    #   healthcheck" as healthy
+#     pull_timeout: 10m              # optional, default 10m
+#     job_timeout: 25m               # optional, default 25m, the whole update
+#
+#     image_tag_env: APP_VERSION     # optional. Lets a caller pass --tag, which is
+#                                    #   substituted into this variable. Without it
+#                                    #   a tag is refused
+#     allow_prerelease: false        # optional, default false. Whether a GitHub
+#                                    #   prerelease webhook triggers an update
+#
+#     pre_update:                    # optional, runs as root before anything is
+#                                    #   recreated. Back up a database here
+#       command: /usr/local/bin/backup-app   # required if pre_update is set,
+#                                            #   absolute path, must be executable
+#       args: ["--quick"]            # optional
+#       timeout: 15m                 # optional, default 10m
+#       required: true               # optional, default true. false means a failing
+#                                    #   hook is recorded but the update continues
