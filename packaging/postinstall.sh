@@ -1,6 +1,12 @@
 #!/bin/sh
 set -e
 
+# Sampled before anything below creates it, or every install looks like an upgrade.
+FRESH=no
+if [ ! -f /etc/dup/config.yml ]; then
+    FRESH=yes
+fi
+
 if ! id -u dup >/dev/null 2>&1; then
     useradd --system --user-group \
             --no-create-home --home-dir /nonexistent \
@@ -55,7 +61,7 @@ if command -v systemctl >/dev/null 2>&1; then
     fi
 fi
 
-if [ -f /etc/dup/config.yml ]; then
+if [ "${FRESH}" = no ]; then
     cat <<'BANNER'
 
 dup upgraded. Validate and restart, in this order:
