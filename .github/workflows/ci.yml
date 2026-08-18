@@ -76,6 +76,16 @@ jobs:
       - name: Shellcheck
         run: shellcheck -S warning install.sh packaging/*.sh
 
+      # Installer output ends up in shell scrollback, CI logs, terminal
+      # recordings and pasted bug reports. It must never carry a secret value.
+      - name: Installer must not print secrets
+        run: |
+          if grep -nE '\$\(cat[^)]*(bearer\.token|github\.secret|TOKEN_FILE|GH_SECRET_FILE)' install.sh packaging/*.sh; then
+            echo "the line above prints a secret value into installer output"
+            exit 1
+          fi
+          echo "no secret values are printed"
+
   privilege-split:
     name: Privilege split
     runs-on: ubuntu-latest
