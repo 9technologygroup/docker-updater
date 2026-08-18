@@ -11,9 +11,14 @@ import (
 	"github.com/9technologygroup/docker-updater/internal/config"
 )
 
+// DefaultServiceUser owns the group that may read the private key. The installer
+// and both packages create this account before anything calls dup cert.
+const DefaultServiceUser = "dup"
+
 func runCert(args []string) error {
 	fs, configPath := newFlagSet("cert")
 	force := fs.Bool("force", false, "replace an existing certificate")
+	defaults := fs.Bool("defaults", false, "generate at the default paths without reading a config, for first install")
 	if err := noArgs(fs, args, "cert"); err != nil {
 		return err
 	}
@@ -26,6 +31,10 @@ func runCert(args []string) error {
 		return fmt.Errorf("run this as root.\n\n" +
 			"The private key must end up owned root:dup mode 0640, and only root can\n" +
 			"set that. Re-run:\n\n  sudo dup cert")
+	}
+
+	if *defaults {
+		return generateDefault(*force)
 	}
 
 	cfg, err := config.LoadBasic(*configPath)
@@ -63,8 +72,31 @@ func runCert(args []string) error {
 			"correct agent_peer_user in %s", cfg.AgentPeerUser, err, *configPath)
 	}
 
-	if certs.Exists(cfg.TLS.CertFile, cfg.TLS.KeyFile) && !*force {
-		existing, err := certs.Describe(cfg.TLS.CertFile)
+	hosts := cfg.TLS.Hosts
+	if len(hosts) == 0 {
+		hosts = certs.DefaultHosts(cfg.Listen)
+	}
+	return writeCert(cfg.TLS.CertFile, cfg.TLS.KeyFile, hosts, gid, cfg.AgentPeerUser, apiURL(cfg), *force)
+}
+
+// generateDefault runs before a config exists. The installer calls it so a fresh
+// host has a usable certificate the moment the reference config is copied into
+// place, rather than leaving TLS as a step somebody has to remember.
+func generateDefault(force bool) error {
+	gid, err := lookupGID(DefaultServiceUser)
+	if err != nil {
+		return fmt.Errorf("the %q account does not exist yet: %w\n\n"+
+			"It is created by the installer and by the deb and rpm packages, so run\n"+
+			"one of those first", DefaultServiceUser, err)
+	}
+	hosts := certs.DefaultHosts(config.DefaultListen)
+	return writeCert(config.DefaultCertFile, config.DefaultKeyFile, hosts, gid,
+		DefaultServiceUser, "https://"+config.DefaultListen, force)
+}
+
+func writeCert(certFile, keyFile string, hosts []string, gid int, owner, url string, force bool) error {
+	if certs.Exists(certFile, keyFile) && !force {
+		existing, err := certs.Describe(certFile)
 		if err != nil {
 			return err
 		}
@@ -74,24 +106,19 @@ func runCert(args []string) error {
 		return nil
 	}
 
-	hosts := cfg.TLS.Hosts
-	if len(hosts) == 0 {
-		hosts = certs.DefaultHosts(cfg.Listen)
-	}
-
-	result, err := certs.Generate(cfg.TLS.CertFile, cfg.TLS.KeyFile, hosts, gid)
+	result, err := certs.Generate(certFile, keyFile, hosts, gid)
 	if err != nil {
 		return err
 	}
 
 	fmt.Printf("generated a self-signed certificate\n")
 	printCert(result)
-	fmt.Printf("\nkey owned root:%s mode 0640\n", cfg.AgentPeerUser)
-	fmt.Printf("\nNext\n\n")
+	fmt.Printf("\nkey owned root:%s mode 0640\n", owner)
+	fmt.Printf("\ndup serves %s once TLS is enabled and it is restarted:\n\n", url)
 	fmt.Printf("  sudo dup check\n")
 	fmt.Printf("  sudo systemctl restart dup-agent dup\n")
-	fmt.Printf("\ndup will then serve %s\n", apiURL(cfg))
 	fmt.Printf("\nThis is self-signed, so clients will not trust it until you tell them to.\n")
+	fmt.Printf("dup's own commands trust it automatically by reading cert_file.\n")
 	fmt.Printf("In n8n, either import %s as a trusted certificate or disable verification for this host only.\n", result.CertFile)
 	fmt.Printf("Pin the fingerprint above rather than turning verification off everywhere.\n")
 	return nil

@@ -243,6 +243,15 @@ EXAMPLE_FILE="${CONF_DIR}/config.example.yml"
 install -m 0640 -o root -g "${SVC_USER}" "${SRC_DIR}/deploy/config.example.yml" "${EXAMPLE_FILE}"
 log "installed reference config to ${EXAMPLE_FILE}"
 
+# ------------------------------------------------------------- tls by default
+
+# The reference config ships with self_signed: true, so the pair has to exist
+# before anyone copies it into place. An existing certificate is never touched.
+if [ ! -f "${CONF_FILE}" ]; then
+    "${API_SRC}" cert --defaults >/dev/null || die "could not create the self-signed certificate"
+    log "self-signed certificate ready at ${CONF_DIR}/self-signed.crt"
+fi
+
 # ------------------------------------------------- validate before installing
 
 # The new binary validates the existing config while the old one is still in
@@ -282,12 +291,20 @@ install -m 0755 -o root -g root "${AGENT_SRC}" "${BIN_DIR}/${AGENT_BIN}"
 # Earlier versions of this script installed to /usr/local/bin. Leaving those in
 # place shadows the real binaries on any PATH that prefers /usr/local/bin, so
 # 'dup version' would report one build while the service ran another.
+REMOVED_STALE=no
 for stale in "${LEGACY_BIN_DIR}/${API_BIN}" "${LEGACY_BIN_DIR}/${AGENT_BIN}"; do
     if [ -f "${stale}" ]; then
         rm -f "${stale}"
         log "removed stale ${stale} from an earlier install"
+        REMOVED_STALE=yes
     fi
 done
+
+if [ "${REMOVED_STALE}" = "yes" ]; then
+    warn "Your current shell may still have the old path cached. If the next dup"
+    warn "command says '${LEGACY_BIN_DIR}/dup: No such file or directory', run:"
+    warn "    hash -r"
+fi
 
 log "installing systemd units"
 for unit in "${AGENT_BIN}.service" "${API_BIN}.service"; do
@@ -307,6 +324,7 @@ if [ ! -f "${CONF_FILE}" ]; then
     echo "  units         ${API_BIN}.service, ${AGENT_BIN}.service  (installed, not enabled)"
     echo "  config dir    ${CONF_DIR}  (root:${SVC_USER} 0750)"
     echo "  reference     ${EXAMPLE_FILE}"
+    echo "  tls cert      ${CONF_DIR}/self-signed.crt  (generated, TLS is on by default)"
     echo "  bearer token  ${TOKEN_FILE}"
     echo "  github secret ${GH_SECRET_FILE}"
     echo
@@ -317,28 +335,26 @@ if [ ! -f "${CONF_FILE}" ]; then
     echo
     echo "       sudo cp ${EXAMPLE_FILE} ${CONF_FILE}"
     echo "       sudo chown root:${SVC_USER} ${CONF_FILE} && sudo chmod 0640 ${CONF_FILE}"
-    echo "       sudo \$EDITOR ${CONF_FILE}"
+    echo "       sudo nano ${CONF_FILE}          # or vim, or whatever you use"
     echo
-    echo "  2. If you want dup to terminate TLS itself, set 'tls: {self_signed: true}'"
-    echo "     in the config and generate the certificate. Skip this if dup will sit"
-    echo "     behind a reverse proxy on 127.0.0.1."
+    echo "     TLS is already on in the reference config, and the certificate above"
+    echo "     is already generated, so there is nothing to do for HTTPS. To turn it"
+    echo "     off, set 'self_signed: false' under tls."
     echo
-    echo "       sudo ${API_BIN} cert"
-    echo
-    echo "  3. Check the config parses and matches this host."
+    echo "  2. Check the config parses and matches this host."
     echo
     echo "       sudo ${API_BIN} check"
     echo
-    echo "  4. Prove the ${SVC_USER} account cannot rewrite anything that runs as root."
+    echo "  3. Prove the ${SVC_USER} account cannot rewrite anything that runs as root."
     echo "     This must pass, or the privilege split buys you nothing."
     echo
     echo "       sudo ${API_BIN} audit"
     echo
-    echo "  5. Start it."
+    echo "  4. Start it."
     echo
     echo "       sudo systemctl enable --now ${AGENT_BIN} ${API_BIN}"
     echo
-    echo "  6. Confirm it is up."
+    echo "  5. Confirm it is up."
     echo
     echo "       systemctl status ${AGENT_BIN} ${API_BIN}"
     echo "       ${API_BIN} list"
@@ -433,11 +449,17 @@ if [ "${SCHEME}" = "https" ]; then
 fi
 echo "  Nginx Proxy Manager host (optional, preferred when you already run one):"
 echo "    Domain          deploy.example.com"
-echo "    Scheme          http"
+echo "    Scheme          ${SCHEME}"
 echo "    Forward host    127.0.0.1"
 echo "    Forward port    ${PORT}"
 echo "    Websockets      off"
 echo "    Block exploits  on"
 echo "    SSL             request a cert, force SSL, HTTP/2 on"
 echo "    Access List     attach one with Basic Auth (satisfy: all)"
+if [ "${SCHEME}" = "https" ]; then
+    echo
+    echo "    dup serves a self-signed certificate, so the proxy will not trust it by"
+    echo "    name. In NPM, tick 'Ignore Invalid SSL' on the Advanced tab, or import"
+    echo "    ${CONF_DIR}/self-signed.crt. The hop is over loopback either way."
+fi
 echo

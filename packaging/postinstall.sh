@@ -35,8 +35,15 @@ for stale in /usr/local/bin/dup /usr/local/bin/dup-agent; do
     if [ -f "${stale}" ]; then
         rm -f "${stale}"
         echo "removed stale ${stale} from an earlier install"
+        echo "if your shell still says '${stale}: No such file or directory', run: hash -r"
     fi
 done
+
+# The reference config ships with self_signed: true, so the pair has to exist
+# before anyone copies it into place. An existing certificate is never touched.
+if [ ! -f /etc/dup/config.yml ] && [ -x /usr/bin/dup ]; then
+    /usr/bin/dup cert --defaults >/dev/null 2>&1 || true
+fi
 
 if command -v systemctl >/dev/null 2>&1; then
     systemctl daemon-reload || true
@@ -66,22 +73,22 @@ Next steps, in this order
   1. Copy the reference config and edit it for this host:
        sudo cp /etc/dup/config.example.yml /etc/dup/config.yml
        sudo chown root:dup /etc/dup/config.yml && sudo chmod 0640 /etc/dup/config.yml
-       sudo $EDITOR /etc/dup/config.yml
+       sudo nano /etc/dup/config.yml          # or vim, or whatever you use
 
-  2. Only if dup should terminate TLS itself, rather than sit behind a reverse
-     proxy on 127.0.0.1. Set 'tls: {self_signed: true}' in the config, then:
-       sudo dup cert
+     TLS is on in the reference config and the certificate is already
+     generated at /etc/dup/self-signed.crt, so HTTPS needs nothing from you.
+     To turn it off, set 'self_signed: false' under tls.
 
-  3. Validate the config:
+  2. Validate the config:
        sudo dup check
 
-  4. Prove the dup account cannot rewrite what runs as root:
+  3. Prove the dup account cannot rewrite what runs as root:
        sudo dup audit
 
-  5. Start it:
+  4. Start it:
        sudo systemctl enable --now dup-agent dup
 
-  6. Confirm it is up:
+  5. Confirm it is up:
        systemctl status dup-agent dup
        dup list
 

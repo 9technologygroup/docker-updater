@@ -4,8 +4,15 @@ log_level: info
 agent_socket: /run/dup/agent.sock
 agent_peer_user: dup
 
+# On by default. The installer generates the pair below before you get here, so
+# copying this file is all it takes to have dup serve HTTPS.
+#   cert /etc/dup/self-signed.crt
+#   key  /etc/dup/self-signed.key
+# Leave cert_file and key_file empty to use those. Set self_signed: false to
+# turn TLS off entirely, or point cert_file and key_file at a certificate you
+# manage yourself, in which case dup will never overwrite it.
 tls:
-  self_signed: false
+  self_signed: true
   cert_file: ""
   key_file: ""
   hosts: []
