@@ -295,7 +295,8 @@ func runStatus(args []string) error {
 	for _, j := range out.Jobs {
 		_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
 			j.StartedAt.Local().Format("02 Jan 15:04"), j.Target, j.State,
-			orDash(j.Trigger), (time.Duration(j.DurationMS) * time.Millisecond).Round(time.Second), j.Message)
+			orDash(j.Trigger), (time.Duration(j.DurationMS) * time.Millisecond).Round(time.Second),
+			clip(j.Message, 52))
 	}
 	return w.Flush()
 }

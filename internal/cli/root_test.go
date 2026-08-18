@@ -106,9 +106,20 @@ func TestUsageListsEveryCommandExactlyOnce(t *testing.T) {
 	usage(&b)
 	out := b.String()
 
+	// Match the row, not any mention: a summary may legitimately begin with
+	// another command's name, as scan's does with "check".
+	rows := map[string]int{}
+	for _, line := range strings.Split(out, "\n") {
+		if !strings.HasPrefix(line, "  ") {
+			continue
+		}
+		if name, _, ok := strings.Cut(strings.TrimSpace(line), " "); ok {
+			rows[name]++
+		}
+	}
 	for _, c := range commands() {
-		if n := strings.Count(out, "  "+c.name+" "); n != 1 {
-			t.Errorf("usage mentions %q %d times, want 1", c.name, n)
+		if rows[c.name] != 1 {
+			t.Errorf("usage lists %q as a row %d times, want 1", c.name, rows[c.name])
 		}
 	}
 	for _, group := range groupOrder {

@@ -97,25 +97,49 @@ func printTargets(cfg *config.Config, views []targetView) {
 	}
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	_, _ = fmt.Fprintln(w, "STACK\tAUTO\tEVERY\tNEXT\tSOAK\tROLLBACK\tSERVICES\tDIR")
+	// No AUTO column: a dash under CHECK already says this stack only updates
+	// when asked, and the dashes were most of the table's width.
+	_, _ = fmt.Fprintln(w, "STACK\tCHECK\tNEXT\tSOAK\tRB\tSERVICES\tDIR")
 
+	manual := 0
 	for _, t := range cfg.Targets {
 		every, soak, next := "-", "-", "-"
-		auto := "no"
 		if t.AutoUpdate {
-			auto = "yes"
 			every = short(t.CheckInterval)
 			soak = short(t.SoakWindow())
 			next = nextCheckIn(byName[t.Name].NextCheckAt)
+		} else {
+			manual++
 		}
-		rollback := "no"
+		rollback := "off"
 		if t.RollbackEnabled() {
-			rollback = "yes"
+			rollback = "on"
 		}
-		_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-			t.Name, auto, every, next, soak, rollback, joinOr(t.Services, "all"), t.Dir)
+		_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+			t.Name, every, next, soak, rollback, joinOr(t.Services, "all"), clipPath(t.Dir, 34))
 	}
 	_ = w.Flush()
+
+	if manual > 0 {
+		fmt.Printf("\nA dash under CHECK means that stack updates only when asked.\n")
+	}
+}
+
+// clipPath keeps the tail of a path, which is the part that identifies the stack.
+// Full paths pushed the table past any sensible terminal width.
+func clipPath(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	return "..." + s[len(s)-max+3:]
+}
+
+// clip keeps the head of free text, where the useful part usually is.
+func clip(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	return s[:max-3] + "..."
 }
 
 // printActivity shows what the scheduler is holding. An update that has been

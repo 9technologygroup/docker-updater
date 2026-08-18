@@ -25,6 +25,7 @@ import (
 	"github.com/9technologygroup/docker-updater/internal/selfupdate"
 	"github.com/9technologygroup/docker-updater/internal/server"
 	"github.com/9technologygroup/docker-updater/internal/version"
+	"github.com/9technologygroup/docker-updater/internal/wire"
 )
 
 const (
@@ -88,7 +89,10 @@ func runServe(args []string) error {
 			p, ok := scheduler.PendingFor(target)
 			return p.Since, p.Services, ok
 		}).
-		WithTiming(scheduler.Timing)
+		WithTiming(scheduler.Timing).
+		WithChecker(func(ctx context.Context, target string) (wire.CheckResult, error) {
+			return client.Check(ctx, target)
+		})
 
 	go scheduler.Run(ctx)
 	go watchForNewRelease(ctx, checker, log)

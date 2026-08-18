@@ -38,7 +38,8 @@ func commands() []command {
 		{"list", groupDaily, "show configured stacks, their update policy, and what dup is not covering", runList},
 		{"status", groupDaily, "show what is happening now, and the next scheduled check", runStatus},
 		{"logs", groupDaily, "show the durable history of finished updates, newest first", runLogs},
-		{"update", groupDaily, "trigger an update for one stack", runUpdate},
+		{"scan", groupDaily, "check every stack against its registry now, without updating", runScan},
+		{"update", groupDaily, "trigger an update for one stack, --force to recreate regardless", runUpdate},
 		{"version", groupDaily, "print the version and check for a newer release", runVersion},
 
 		{"serve", groupUnit, "run the unprivileged HTTP API", runServe},

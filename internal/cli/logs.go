@@ -69,13 +69,13 @@ func runLogs(args []string) error {
 			j.StartedAt.Local().Format("02 Jan 15:04"), j.Target, j.State,
 			orDash(j.Trigger),
 			(time.Duration(j.DurationMS) * time.Millisecond).Round(time.Second),
-			orDash(strings.Join(j.Changed, ",")), j.ID, j.Message)
+			orDash(clip(strings.Join(j.Changed, ","), 20)), j.ID[:8], clip(j.Message, 44))
 	}
 	if err := w.Flush(); err != nil {
 		return err
 	}
 
-	fmt.Printf("\nFrom %s. Show one in full with:  dup logs --job <JOB>\n", cfg.HistoryFile)
+	fmt.Printf("\ndup logs --job <JOB> for the full message and every step\n")
 	return nil
 }
 

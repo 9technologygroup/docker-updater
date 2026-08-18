@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -14,6 +15,7 @@ import (
 	"github.com/9technologygroup/docker-updater/internal/config"
 	"github.com/9technologygroup/docker-updater/internal/job"
 	"github.com/9technologygroup/docker-updater/internal/selfupdate"
+	"github.com/9technologygroup/docker-updater/internal/wire"
 )
 
 const (
@@ -39,6 +41,7 @@ type Server struct {
 	updateStatus func() (selfupdate.Status, bool)
 	pending      func(target string) (time.Time, []string, bool)
 	timing       func(target string) (last, next time.Time)
+	checkNow     func(ctx context.Context, target string) (wire.CheckResult, error)
 }
 
 // WithBuild records the commit reported by GET /v1/version.
@@ -52,6 +55,13 @@ func (s *Server) WithBuild(commit string) *Server {
 // GitHub on demand.
 func (s *Server) WithUpdateStatus(fn func() (selfupdate.Status, bool)) *Server {
 	s.updateStatus = fn
+	return s
+}
+
+// WithChecker lets a caller ask for a registry check now rather than waiting for
+// the schedule. The scheduler was the only thing that could trigger one.
+func (s *Server) WithChecker(fn func(ctx context.Context, target string) (wire.CheckResult, error)) *Server {
+	s.checkNow = fn
 	return s
 }
 
@@ -78,6 +88,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 	mux.Handle("GET /v1/targets", s.protected(s.handleListTargets))
 	mux.Handle("POST /v1/targets/{target}/update", s.protected(s.handleUpdate))
+	mux.Handle("POST /v1/targets/{target}/check", s.protected(s.handleCheckNow))
 	mux.Handle("GET /v1/targets/{target}/status", s.protected(s.handleTargetStatus))
 	mux.Handle("GET /v1/jobs", s.protected(s.handleListJobs))
 	mux.Handle("GET /v1/version", s.protected(s.handleVersion))
@@ -118,6 +129,31 @@ func (s *Server) protected(next handlerFunc) http.Handler {
 
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// handleCheckNow pulls and compares without changing anything that is running.
+func (s *Server) handleCheckNow(w http.ResponseWriter, r *http.Request, _ requestContext) {
+	name := r.PathValue("target")
+	if _, ok := s.cfg.Target(name); !ok {
+		writeError(w, http.StatusNotFound, "unknown target")
+		return
+	}
+	if s.checkNow == nil {
+		writeError(w, http.StatusNotImplemented, "this build cannot check for updates")
+		return
+	}
+
+	result, err := s.checkNow(r.Context(), name)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"target":    name,
+		"available": result.Available,
+		"changed":   result.Changed,
+		"message":   result.Message,
+	})
 }
 
 func (s *Server) handleVersion(w http.ResponseWriter, _ *http.Request, _ requestContext) {

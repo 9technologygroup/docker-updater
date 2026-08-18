@@ -24,6 +24,11 @@ The caller names a **stack**, never a path and never a command. Everything else 
 
 Requires Linux, systemd and Docker Compose v2.
 
+Not macOS. Both binaries compile and run there, which is useful for development, but there
+are no darwin release builds, `install.sh` refuses without systemd, and the agent's
+peer-credential check has no implementation outside Linux, so socket permissions become the
+only control over who can drive the root agent. It warns about exactly that at startup.
+
 ## Install
 
 ```sh
@@ -176,7 +181,9 @@ itself is removed.
 | Command | What it does |
 |---|---|
 | `dup list` | Stacks, their update policy, and every compose project or container on the host that dup is **not** covering |
-| `dup status [stack]` | Recent update jobs, newest first |
+| `dup status [stack]` | What is running now, plus recent outcomes from memory |
+| `dup logs [stack]` | Finished updates from disk, so they survive a restart. `--job <id>`, `--full`, `--limit` |
+| `dup scan [stack]` | Check every stack against its registry now, without updating anything |
 | `dup update <stack>` | Trigger an update. `--tag`, `--dry-run`, `--force`, `--reason`, `--wait`. `--dry-run` pulls and reports what would change without recreating anything |
 | `dup check` | Validate the config |
 | `dup audit` | Verify the service account cannot rewrite what runs as root |
@@ -459,6 +466,7 @@ All endpoints except `/healthz` need auth.
 | GET | `/healthz` | Liveness. No auth, no detail. |
 | GET | `/v1/targets` | Configured stacks and whether each is busy |
 | POST | `/v1/targets/{stack}/update` | Start an update |
+| POST | `/v1/targets/{stack}/check` | Check for a new image now. Pulls and compares, changes nothing |
 | GET | `/v1/targets/{stack}/status` | Running job plus recent history for one stack |
 | GET | `/v1/jobs?target=&limit=` | Recent jobs |
 | GET | `/v1/jobs/{id}` | One job with its full step log |
@@ -627,6 +635,24 @@ gets everything regardless:
 ```bash
 journalctl -u dup -u dup-agent -f
 ```
+
+### Forcing things
+
+```bash
+dup scan                       # check every stack against its registry now
+dup scan app                   # just one
+dup update app                 # update if there is something new
+dup update app --force         # recreate even when the images have not changed
+dup update app --dry-run       # pull, report what would change, recreate nothing
+```
+
+`dup scan` answers "is there anything waiting" without touching what is running. It pulls
+images in order to compare them, so it is not free and can take a while on a slow link. It
+does not shortcut a soak: an auto-update stack still waits out its window.
+
+`--force` is the one to reach for when a container is misbehaving and you want it recreated
+from the image it is already on. Without it, an update with nothing new to pull and a
+healthy stack finishes as `no_change` and leaves everything alone.
 
 ### Seeing what is going on
 
