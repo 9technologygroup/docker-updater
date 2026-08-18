@@ -30,7 +30,7 @@ Requires Linux, systemd and Docker Compose v2.
 curl -fsSL https://raw.githubusercontent.com/9technologygroup/docker-updater/main/install.sh | sudo sh
 ```
 
-That downloads the release for your architecture, verifies it against `checksums.txt`, creates the `dup` system account, installs both binaries and both units, generates a bearer token and a GitHub webhook secret, and sets the file ownership the security model depends on.
+That downloads the release for your architecture, verifies it against `checksums.txt`, creates the `dup` system account, installs both binaries and both units, generates a bearer token, a GitHub webhook secret and a self-signed TLS certificate, and sets the file ownership the security model depends on.
 
 Or with a package:
 
@@ -64,7 +64,6 @@ sudo cp /etc/dup/config.example.yml /etc/dup/config.yml
 sudo chown root:dup /etc/dup/config.yml && sudo chmod 0640 /etc/dup/config.yml
 sudo nano /etc/dup/config.yml   # or vim, or whatever you use
 
-sudo dup cert      # only if you set tls.self_signed, see Exposing the port
 sudo dup check     # the config parses and matches this host
 sudo dup audit     # the dup account cannot rewrite what runs as root
 sudo systemctl enable --now dup-agent dup
@@ -81,6 +80,12 @@ sudo dup status
 
 `/etc/dup/config.yml` is `root:dup 0640`, so these read it as root. To run them as
 yourself, join the group once: `sudo usermod -aG dup $USER`, then log out and back in.
+
+**TLS is on out of the box.** The installer generates `/etc/dup/self-signed.crt` and
+`/etc/dup/self-signed.key` before you copy the reference config, and that config ships
+with `self_signed: true`, so dup serves HTTPS from the first start with nothing to edit.
+An upgrade never regenerates or replaces a certificate that already exists. To turn TLS
+off, set `self_signed: false` under `tls`.
 
 ### Upgrading
 
@@ -130,9 +135,14 @@ Three options. dup does not care which you pick, but it will not serve plaintext
 
 | Option | When | Config |
 |---|---|---|
-| **Loopback + reverse proxy** | You already run NPM, Caddy or Traefik. Preferred if the proxy is not itself managed by dup. | `listen: "127.0.0.1:7788"`, nothing else |
-| **dup terminates TLS itself** | dup manages the proxy's own stack, or you do not want a proxy in the path at all | `tls.self_signed: true`, or point `tls.cert_file`/`key_file` at a wildcard you already have |
+| **dup terminates TLS itself** (default) | Always, unless you have a reason not to. dup manages the proxy's own stack, or you do not want a proxy in the path at all | `tls.self_signed: true`, which is what the reference config ships with. Or point `tls.cert_file`/`key_file` at a wildcard you already have |
+| **Loopback + reverse proxy** | You already run NPM, Caddy or Traefik and would rather it held the certificate | `listen: "127.0.0.1:7788"` and `tls.self_signed: false` |
 | **Plaintext on the network** | Never, unless something else is doing the encrypting | `allow_non_loopback: true`, and dup will complain in the log |
+
+If you put a reverse proxy in front while dup is still terminating TLS, the proxy talks
+HTTPS to a self-signed backend over loopback. In Nginx Proxy Manager that means setting
+the scheme to `https` and ticking **Ignore Invalid SSL** on the Advanced tab, or
+importing `/etc/dup/self-signed.crt`.
 
 ### Why you may not want the proxy
 
