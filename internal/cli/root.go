@@ -194,7 +194,7 @@ func newLogger(level string) *slog.Logger {
 }
 
 func apiURL(cfg *config.Config) string {
-	if cfg.TLS.Enabled() {
+	if cfg.TLS.IsEnabled() {
 		return "https://" + cfg.Listen
 	}
 	return "http://" + cfg.Listen
