@@ -186,7 +186,9 @@ func readFile(path string, q Query) ([]job.Snapshot, error) {
 		if q.Target != "" && snap.Target != q.Target {
 			continue
 		}
-		if q.JobID != "" && snap.ID != q.JobID {
+		// Prefix, because the listing shows a shortened id and then tells you to
+		// pass it to --job. An exact match made that instruction wrong.
+		if q.JobID != "" && !strings.HasPrefix(snap.ID, q.JobID) {
 			continue
 		}
 		out = append(out, snap)
