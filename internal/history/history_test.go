@@ -221,3 +221,45 @@ func TestArchiveOrdering(t *testing.T) {
 		t.Fatal("unreachable")
 	}
 }
+
+// The listing shows a shortened id and tells you to pass it to --job, so the
+// lookup has to accept a prefix or that instruction is wrong.
+func TestJobLookupAcceptsAPrefix(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "history.jsonl")
+	w := openAt(t, path, 1<<20, 3)
+	_ = w.Append(snap("917334efbe3b6559", "web", job.StateSucceeded))
+	_ = w.Append(snap("aa11bb22cc33dd44", "db", job.StateFailed))
+
+	got, err := Read(path, Query{JobID: "917334ef", Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].ID != "917334efbe3b6559" {
+		t.Fatalf("prefix lookup returned %#v", got)
+	}
+
+	// The full id must keep working.
+	full, _ := Read(path, Query{JobID: "917334efbe3b6559", Limit: 10})
+	if len(full) != 1 {
+		t.Errorf("full id lookup returned %d, want 1", len(full))
+	}
+	// And a prefix matching nothing returns nothing.
+	none, _ := Read(path, Query{JobID: "ffffffff", Limit: 10})
+	if len(none) != 0 {
+		t.Errorf("a non-matching prefix returned %d", len(none))
+	}
+}
+
+// A short prefix can match more than one job, and the caller has to be able to
+// tell rather than being handed the newest silently.
+func TestAmbiguousPrefixReturnsEveryMatch(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "history.jsonl")
+	w := openAt(t, path, 1<<20, 3)
+	_ = w.Append(snap("abc1000000000000", "web", job.StateSucceeded))
+	_ = w.Append(snap("abc2000000000000", "web", job.StateFailed))
+
+	got, _ := Read(path, Query{JobID: "abc", Limit: 10})
+	if len(got) != 2 {
+		t.Fatalf("ambiguous prefix returned %d, want both", len(got))
+	}
+}

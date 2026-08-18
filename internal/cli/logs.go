@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/9technologygroup/docker-updater/internal/config"
 	"github.com/9technologygroup/docker-updater/internal/history"
+	"github.com/9technologygroup/docker-updater/internal/job"
 )
 
 func runLogs(args []string) error {
@@ -39,14 +41,20 @@ func runLogs(args []string) error {
 		}
 	}
 
+	// A short id can match more than one job, so read enough to notice rather
+	// than silently showing the newest.
+	readLimit := *limit
 	if *jobID != "" {
-		*limit = 1
+		readLimit = 50
 	}
 	jobs, err := history.Read(cfg.HistoryFile, history.Query{
-		Target: target, JobID: *jobID, Limit: *limit,
+		Target: target, JobID: *jobID, Limit: readLimit,
 	})
 	if err != nil {
 		return err
+	}
+	if *jobID != "" && len(jobs) > 1 {
+		return ambiguousJob(*jobID, jobs)
 	}
 
 	if len(jobs) == 0 {
@@ -77,6 +85,16 @@ func runLogs(args []string) error {
 
 	fmt.Printf("\ndup logs --job <JOB> for the full message and every step\n")
 	return nil
+}
+
+func ambiguousJob(prefix string, jobs []job.Snapshot) error {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%q matches %d jobs. Give more of the id:\n", prefix, len(jobs))
+	for _, j := range jobs {
+		fmt.Fprintf(&b, "\n  %s  %s  %s  %s",
+			j.ID, j.StartedAt.Local().Format("02 Jan 15:04"), j.Target, j.State)
+	}
+	return errors.New(b.String())
 }
 
 func emptyHistory(cfg *config.Config, target, jobID string) error {
