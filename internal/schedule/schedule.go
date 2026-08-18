@@ -2,8 +2,10 @@ package schedule
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"math/rand/v2"
+	"net/http"
 	"sync"
 	"time"
 
@@ -22,6 +24,17 @@ type Starter interface {
 	Start(t *config.Target, req job.Request) (*job.Job, error)
 }
 
+// BusyReporter is satisfied by job.Manager. It lets the scheduler skip a check
+// while an update is already running, rather than asking the agent something it
+// will refuse.
+type BusyReporter interface {
+	Busy(target string) bool
+}
+
+// statusError is any error carrying an agent status code, satisfied by
+// agent.StatusError without importing it.
+type statusError interface{ StatusCode() int }
+
 type Pending struct {
 	Since    time.Time
 	Services []string
@@ -33,6 +46,7 @@ type Scheduler struct {
 	cfg     *config.Config
 	checker Checker
 	starter Starter
+	busy    BusyReporter
 	log     *slog.Logger
 
 	// jitter spreads the first check across hosts. A field rather than a
@@ -46,7 +60,7 @@ type Scheduler struct {
 }
 
 func New(cfg *config.Config, checker Checker, starter Starter, log *slog.Logger) *Scheduler {
-	return &Scheduler{
+	s := &Scheduler{
 		cfg:       cfg,
 		checker:   checker,
 		starter:   starter,
@@ -56,6 +70,14 @@ func New(cfg *config.Config, checker Checker, starter Starter, log *slog.Logger)
 		nextCheck: make(map[string]time.Time),
 		lastCheck: make(map[string]time.Time),
 	}
+	if b, ok := starter.(BusyReporter); ok {
+		s.busy = b
+	}
+	return s
+}
+
+func (s *Scheduler) isBusy(target string) bool {
+	return s.busy != nil && s.busy.Busy(target)
 }
 
 func (s *Scheduler) Managed() []string {
@@ -165,11 +187,28 @@ func (s *Scheduler) watch(ctx context.Context, t *config.Target) {
 }
 
 func (s *Scheduler) tick(ctx context.Context, t *config.Target) {
+	// Nothing to learn while an update is running, and asking would pull images
+	// for a stack that is mid-deploy.
+	if s.isBusy(t.Name) {
+		s.log.Debug("skipped the scheduled check, an update is already running", "target", t.Name)
+		return
+	}
+
 	checkCtx, cancel := context.WithTimeout(ctx, t.PullTimeout+time.Minute)
 	defer cancel()
 
 	result, err := s.checker.Check(checkCtx, t.Name)
 	if err != nil {
+		// The agent locks per target, so a check during an in-flight update is
+		// refused with 409 before it pulls anything. That is contention working
+		// as designed, not a failure, and logging it as one sends people
+		// hunting for a fault.
+		var se statusError
+		if errors.As(err, &se) && (se.StatusCode() == http.StatusConflict || se.StatusCode() == http.StatusServiceUnavailable) {
+			s.log.Info("skipped the scheduled check, the agent is busy with this stack",
+				"target", t.Name, "status", se.StatusCode())
+			return
+		}
 		s.log.Error("auto update check failed", "target", t.Name, "error", err)
 		return
 	}

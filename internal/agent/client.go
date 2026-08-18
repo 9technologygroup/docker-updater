@@ -220,6 +220,10 @@ type StatusError struct {
 	Msg    string
 }
 
+// StatusCode lets a caller react to the agent's verdict without importing this
+// package, which keeps the scheduler's dependency on it at zero.
+func (e *StatusError) StatusCode() int { return e.Status }
+
 func (e *StatusError) Error() string {
 	return fmt.Sprintf("the update agent refused the check (%d): %s", e.Status, e.Msg)
 }

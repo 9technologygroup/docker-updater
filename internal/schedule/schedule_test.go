@@ -269,3 +269,74 @@ func TestSoakIsNotSkipped(t *testing.T) {
 		t.Errorf("applied %d times while still soaking, want 0", got)
 	}
 }
+
+type busyStarter struct {
+	fakeStarter
+	busy bool
+}
+
+func (b *busyStarter) Busy(string) bool { return b.busy }
+
+// While an update is in flight there is nothing to learn, and asking would pull
+// images for a stack that is mid-deploy.
+func TestNoCheckWhileAnUpdateIsRunning(t *testing.T) {
+	checker := &fakeChecker{result: wire.CheckResult{Available: true, Changed: []string{"app"}}}
+	starter := &busyStarter{busy: true}
+	s, target := newScheduler(t, time.Minute, checker, starter)
+
+	s.tick(context.Background(), target)
+
+	checker.mu.Lock()
+	calls := checker.calls
+	checker.mu.Unlock()
+	if calls != 0 {
+		t.Errorf("asked the agent %d times while an update was running, want 0", calls)
+	}
+	if starter.count() != 0 {
+		t.Error("started an update while one was already running")
+	}
+}
+
+func TestChecksResumeOnceTheUpdateFinishes(t *testing.T) {
+	checker := &fakeChecker{result: wire.CheckResult{Available: false}}
+	starter := &busyStarter{busy: false}
+	s, target := newScheduler(t, time.Minute, checker, starter)
+
+	s.tick(context.Background(), target)
+
+	checker.mu.Lock()
+	calls := checker.calls
+	checker.mu.Unlock()
+	if calls != 1 {
+		t.Errorf("checked %d times when idle, want 1", calls)
+	}
+}
+
+type refusedChecker struct{ status int }
+
+func (r *refusedChecker) Check(context.Context, string) (wire.CheckResult, error) {
+	return wire.CheckResult{}, &fakeStatusErr{status: r.status}
+}
+
+type fakeStatusErr struct{ status int }
+
+func (e *fakeStatusErr) StatusCode() int { return e.status }
+func (e *fakeStatusErr) Error() string   { return "refused" }
+
+// A 409 from the agent is contention working as designed. Logging it as an
+// error sent people hunting for a fault that was not there.
+func TestAgentRefusalIsNotTreatedAsAFailure(t *testing.T) {
+	for _, status := range []int{409, 503} {
+		starter := &fakeStarter{}
+		s, target := newScheduler(t, time.Minute, &refusedChecker{status: status}, starter)
+
+		s.tick(context.Background(), target)
+
+		if _, ok := s.PendingFor("web"); ok {
+			t.Errorf("status %d left pending state behind", status)
+		}
+		if starter.count() != 0 {
+			t.Errorf("status %d started an update", status)
+		}
+	}
+}
