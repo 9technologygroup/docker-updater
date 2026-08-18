@@ -181,8 +181,8 @@ itself is removed.
 | Command | What it does |
 |---|---|
 | `dup list` | Stacks, their update policy, and every compose project or container on the host that dup is **not** covering |
-| `dup status [stack]` | What is running now, plus recent outcomes from memory |
-| `dup logs [stack]` | Finished updates from disk, so they survive a restart. `--job <id>`, `--full`, `--limit` |
+| `dup logs [stack]` | Finished updates, newest first. `--job <id>` for one in full, plus `--full` and `--limit` |
+| `dup status [stack]` | Alias for `dup logs`. It used to read a separate in-memory list that said almost the same thing |
 | `dup scan [stack]` | Check every stack against its registry now, without updating anything |
 | `dup update <stack>` | Trigger an update. `--tag`, `--dry-run`, `--force`, `--reason`, `--wait`. `--dry-run` pulls and reports what would change without recreating anything |
 | `dup check` | Validate the config |
@@ -703,13 +703,15 @@ healthy stack finishes as `no_change` and leaves everything alone.
 ### Seeing what is going on
 
 ```bash
-dup list          # policy, when each stack is next checked, and anything mid-flight
-dup status        # running jobs and recent outcomes, from memory
-dup logs          # every finished update, from disk, so it survives a restart
-dup logs app      # just that stack
-dup logs --job <id>   # one job with every step and its output
-dup logs --full   # every step of each job in the list
+dup list              # policy, when each stack is next checked, and anything mid-flight
+dup logs              # every finished update, from disk, so it survives a restart
+dup logs app          # just that stack
+dup logs --job 5a07b34b   # one job with every step and its output, prefix is enough
+dup logs --full       # every step of each job in the list
 ```
+
+`dup list` answers "what is happening", `dup logs` answers "what happened". `dup status`
+is an alias for `dup logs`, kept so existing scripts keep working.
 
 `dup list` leads with the server's own clock, because a countdown is not actionable
 without knowing what time the scheduler thinks it is:

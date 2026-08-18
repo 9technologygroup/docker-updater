@@ -13,7 +13,6 @@ import (
 	"net/http"
 	"os"
 	"strings"
-	"text/tabwriter"
 	"time"
 
 	"github.com/9technologygroup/docker-updater/internal/config"
@@ -238,67 +237,6 @@ func printJob(snap job.Snapshot) {
 			fmt.Printf("      %s\n", step.Error)
 		}
 	}
-}
-
-func runStatus(args []string) error {
-	fs, configPath := newFlagSet("status")
-	limit := fs.Int("limit", 10, "how many jobs to show, 1 to "+fmt.Sprint(server.MaxJobLimit))
-
-	target, err := oneTarget(fs, args, "dup status [stack] [flags]")
-	if err != nil {
-		return err
-	}
-	if *limit < 1 || *limit > server.MaxJobLimit {
-		return fmt.Errorf("--limit must be between 1 and %d, got %d", server.MaxJobLimit, *limit)
-	}
-
-	cfg, err := config.LoadService(*configPath)
-	if err != nil {
-		return err
-	}
-	if target != "" {
-		if _, ok := cfg.Target(target); !ok {
-			return unknownStack(target, cfg)
-		}
-	}
-
-	client, err := newAPIClient(cfg)
-	if err != nil {
-		return err
-	}
-
-	path := fmt.Sprintf("/v1/jobs?limit=%d", *limit)
-	if target != "" {
-		path += "&target=" + target
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	var out struct {
-		Jobs []job.Snapshot `json:"jobs"`
-	}
-	if err := client.do(ctx, http.MethodGet, path, "", &out); err != nil {
-		return err
-	}
-	if len(out.Jobs) == 0 {
-		if target != "" {
-			fmt.Printf("no updates recorded yet for %s\n", target)
-		} else {
-			fmt.Println("no updates recorded yet")
-		}
-		return nil
-	}
-
-	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	_, _ = fmt.Fprintln(w, "WHEN\tSTACK\tSTATE\tTRIGGER\tTOOK\tDETAIL")
-	for _, j := range out.Jobs {
-		_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
-			j.StartedAt.Local().Format("02 Jan 15:04"), j.Target, j.State,
-			orDash(j.Trigger), (time.Duration(j.DurationMS) * time.Millisecond).Round(time.Second),
-			clip(j.Message, 52))
-	}
-	return w.Flush()
 }
 
 // alreadyRunning turns a 409 into something actionable. The API sends the job

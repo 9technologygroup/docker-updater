@@ -36,8 +36,8 @@ func commands() []command {
 		{"cert", groupSetup, "generate the self-signed TLS certificate (root)", runCert},
 
 		{"list", groupDaily, "show configured stacks, their update policy, and what dup is not covering", runList},
-		{"status", groupDaily, "show what is happening now, and the next scheduled check", runStatus},
-		{"logs", groupDaily, "show the durable history of finished updates, newest first", runLogs},
+		{"logs", groupDaily, "show finished updates, newest first. --job <id> for one in full", runLogs},
+		{"status", groupDaily, "alias for logs", runLogs},
 		{"scan", groupDaily, "check every stack against its registry now, without updating", runScan},
 		{"update", groupDaily, "trigger an update for one stack, --force to recreate regardless", runUpdate},
 		{"version", groupDaily, "print the version and check for a newer release", runVersion},

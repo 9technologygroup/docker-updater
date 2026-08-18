@@ -340,3 +340,26 @@ func TestAgentRefusalIsNotTreatedAsAFailure(t *testing.T) {
 		}
 	}
 }
+
+// A manual "dup update" bypasses the scheduler entirely, so nothing used to drop
+// the soak it was advertising. On a 12h check_interval that left dup list
+// claiming an update was still pending for half a day after it had been applied.
+func TestClearPendingDropsASoakSomebodyElseApplied(t *testing.T) {
+	checker := &fakeChecker{result: wire.CheckResult{Available: true, Changed: []string{"npmplus"}}}
+	starter := &fakeStarter{}
+	s, target := newScheduler(t, 12*time.Hour, checker, starter)
+
+	s.tick(context.Background(), target)
+	if _, ok := s.PendingFor("web"); !ok {
+		t.Fatal("expected a pending soak to start with")
+	}
+
+	s.ClearPending("web")
+
+	if _, ok := s.PendingFor("web"); ok {
+		t.Error("the soak survived an update being applied elsewhere")
+	}
+	// Clearing something already gone must not panic or log noise.
+	s.ClearPending("web")
+	s.ClearPending("never-existed")
+}

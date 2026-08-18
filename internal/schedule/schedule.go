@@ -105,6 +105,16 @@ func (s *Scheduler) Timing(target string) (last, next time.Time) {
 	return s.lastCheck[target], s.nextCheck[target]
 }
 
+// ClearPending drops a soak that no longer means anything, because the update it
+// was waiting on has been applied. Without it a manual "dup update" leaves the
+// scheduler advertising a soak until its next check, which on a 12h interval is
+// half a day of dup list showing something that already happened.
+func (s *Scheduler) ClearPending(target string) {
+	if s.clear(target) {
+		s.log.Info("dropped a pending soak, the update has already been applied", "target", target)
+	}
+}
+
 func (s *Scheduler) setNext(target string, at time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
