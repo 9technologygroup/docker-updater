@@ -16,6 +16,7 @@ UNIT_DIR="/etc/systemd/system"
 PKG_UNIT_DIR="/lib/systemd/system"
 STATE_DIR="/var/lib/dup"
 RUNTIME_DIR="/run/dup"
+SHARE_DIR="/usr/share/dup"
 
 SRC_DIR="$(cd "$(dirname "$0")" 2>/dev/null && pwd || echo .)"
 DOWNLOAD_DIR=""
@@ -47,6 +48,15 @@ dup installer
   sudo ./install.sh --uninstall     stop and remove dup, keeping ${CONF_DIR}
   sudo ./install.sh --uninstall --purge
                                     also remove ${CONF_DIR} and the ${SVC_USER} account
+
+After installing, this script is kept at ${SHARE_DIR}/install.sh, so:
+
+  sudo ${SHARE_DIR}/install.sh --uninstall
+
+Piping from curl needs "sh -s --" so the flags reach the script rather than sh,
+and --yes because the pipe occupies stdin so nothing can read your answer:
+
+  curl -fsSL <url>/install.sh | sudo sh -s -- --uninstall --purge --yes
 
 Options
   --purge      with --uninstall, delete the config, secrets and certificate too
@@ -157,6 +167,8 @@ do_uninstall() {
             log "removed the ${SVC_USER} account"
         fi
     fi
+
+    remove_path "${SHARE_DIR}"
 
     echo
     log "dup removed"
@@ -451,6 +463,12 @@ if [ "${REMOVED_STALE}" = "yes" ]; then
     warn "    hash -r"
 fi
 
+if [ -f "${SRC_DIR}/install.sh" ]; then
+    install -d -m 0755 -o root -g root "${SHARE_DIR}"
+    install -m 0755 -o root -g root "${SRC_DIR}/install.sh" "${SHARE_DIR}/install.sh"
+    log "kept a copy of this installer at ${SHARE_DIR}/install.sh"
+fi
+
 log "installing systemd units"
 for unit in "${AGENT_BIN}.service" "${API_BIN}.service"; do
     install -m 0644 -o root -g root "${SRC_DIR}/deploy/${unit}" "${UNIT_DIR}/${unit}"
@@ -508,7 +526,9 @@ if [ ! -f "${CONF_FILE}" ]; then
     echo "  github secret  $(cat "${GH_SECRET_FILE}")"
     echo
     echo "  Re-running this installer later upgrades the binaries and leaves your"
-    echo "  config and secrets untouched."
+    echo "  config and secrets untouched. To remove dup:"
+    echo
+    echo "    sudo ${SHARE_DIR}/install.sh --uninstall"
     echo
     exit 0
 fi

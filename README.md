@@ -130,9 +130,20 @@ There is deliberately no `dup upgrade`. The binaries are `root:root` and the ser
 
 ### Uninstalling
 
+The installer keeps a copy of itself, so uninstalling needs nothing downloaded:
+
 ```sh
-sudo ./install.sh --uninstall            # stop and remove dup, keep /etc/dup
-sudo ./install.sh --uninstall --purge    # also remove /etc/dup and the dup account
+sudo /usr/share/dup/install.sh --uninstall            # stop and remove dup, keep /etc/dup
+sudo /usr/share/dup/install.sh --uninstall --purge    # also remove /etc/dup and the dup account
+```
+
+Straight from the network, if you would rather. Note `sh -s --`, without which the
+flags are read by `sh` itself rather than passed to the script, and `--yes`, because
+the pipe occupies stdin so nothing can read your answer to the prompt:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/9technologygroup/docker-updater/main/install.sh \
+  | sudo sh -s -- --uninstall --purge --yes
 ```
 
 Without `--purge` the config, both secrets and the TLS certificate survive, so reinstalling
