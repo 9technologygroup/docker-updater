@@ -41,6 +41,13 @@ func NewManager(backend Backend, store *Store, notifier Notifier, log *slog.Logg
 
 func (m *Manager) Store() *Store { return m.store }
 
+// Busy reports whether an update is already running for this target, so a
+// caller can avoid asking the agent something it will refuse.
+func (m *Manager) Busy(target string) bool {
+	_, busy := m.store.Running(target)
+	return busy
+}
+
 func (m *Manager) Start(t *config.Target, req Request) (*Job, error) {
 	j, err := m.store.Begin(t.Name, req)
 	if err != nil {
