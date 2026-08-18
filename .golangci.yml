@@ -1,0 +1,48 @@
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  enable:
+    - errcheck
+    - staticcheck
+    - unused
+    - ineffassign
+    - govet
+    - misspell
+    - unconvert
+    - unparam
+    - gosec
+    - bodyclose
+    - noctx
+
+  settings:
+    errcheck:
+      check-type-assertions: true
+    govet:
+      enable-all: true
+      disable:
+        - fieldalignment
+        # Flags every `if err := f(); err != nil`, which is the idiomatic form.
+        - shadow
+    gosec:
+      excludes:
+        # G204 flags every exec with a variable. Driving docker and running the
+        # configured pre-update hook is the entire point, and both come from a
+        # root-owned config that a request cannot influence.
+        - G204
+        # G304 flags reading a path from a variable. Reading the config file and
+        # the configured certificate is the feature, and both paths are validated.
+        - G304
+        # G404 flags math/rand. It is used only to jitter the first poll so a
+        # host with many stacks does not hit its registry at once.
+        - G404
+
+  exclusions:
+    rules:
+      - path: _test\.go
+        linters:
+          - gosec
+          - unparam
+          - noctx

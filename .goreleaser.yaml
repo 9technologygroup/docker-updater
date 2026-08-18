@@ -1,0 +1,156 @@
+version: 2
+
+project_name: dup
+
+before:
+  hooks:
+    - go mod tidy
+    - go mod download
+
+builds:
+  - id: dup
+    main: ./cmd/dup
+    binary: dup
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags: &ldflags
+      - -s -w
+      - -X github.com/PatchMon/docker-updater/internal/version.Version={{ .Version }}
+      - -X github.com/PatchMon/docker-updater/internal/version.Commit={{ .FullCommit }}
+      - -X github.com/PatchMon/docker-updater/internal/version.Date={{ .Date }}
+    # The one place release targets are defined. dup-agent aliases these, and
+    # `make crosscheck` builds from this file, so nothing can drift.
+    goos: &goos [linux]
+    goarch: &goarch [amd64, arm64, arm, "386"]
+    goarm: &goarm ["7"]
+
+  - id: dup-agent
+    main: ./cmd/dup-agent
+    binary: dup-agent
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags: *ldflags
+    goos: *goos
+    goarch: *goarch
+    goarm: *goarm
+
+archives:
+  - id: dup
+    ids: [dup, dup-agent]
+    # install.sh downloads this exact name; changing it breaks the installer.
+    name_template: >-
+      {{ .ProjectName }}-{{ .Os }}-{{ .Arch }}{{ if .Arm }}v{{ .Arm }}{{ end }}
+    formats: [tar.gz]
+    files:
+      - install.sh
+      - README.md
+      - LICENSE
+      - src: deploy/*
+        dst: deploy
+
+checksum:
+  # install.sh fetches this exact filename to verify downloads.
+  name_template: checksums.txt
+  algorithm: sha256
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  use: github
+  sort: asc
+  groups:
+    - title: Features
+      regexp: '^.*?feat(\([[:word:]]+\))??!?:.+$'
+      order: 0
+    - title: Fixes
+      regexp: '^.*?fix(\([[:word:]]+\))??!?:.+$'
+      order: 1
+    - title: Security
+      regexp: '^.*?sec(urity)?(\([[:word:]]+\))??!?:.+$'
+      order: 2
+    - title: Other
+      order: 99
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+      - "^ci:"
+      - Merge pull request
+      - Merge branch
+
+nfpms:
+  - id: dup
+    ids: [dup, dup-agent]
+    package_name: dup
+    # Omits the version so releases/latest/download/dup_linux_amd64.deb resolves.
+    file_name_template: "{{ .PackageName }}_{{ .Os }}_{{ .Arch }}{{ if .Arm }}v{{ .Arm }}{{ end }}"
+    vendor: PatchMon
+    homepage: https://github.com/9technologygroup/docker-updater
+    maintainer: PatchMon <support@9.technology>
+    description: |-
+      Webhook driven Docker Compose updates with health checks and rollback.
+      Pulls and restarts a named stack, verifies it came up healthy, and rolls
+      back automatically if it did not.
+    license: AGPL-3.0-or-later
+    formats: [deb, rpm, apk]
+    bindir: /usr/bin
+    dependencies:
+      - docker-ce
+    contents:
+      - src: deploy/dup.service
+        dst: /lib/systemd/system/dup.service
+        type: config
+      - src: deploy/dup-agent.service
+        dst: /lib/systemd/system/dup-agent.service
+        type: config
+      - src: deploy/config.example.yml
+        dst: /etc/dup/config.example.yml
+    overrides:
+      rpm:
+        dependencies:
+          - docker-ce
+      apk:
+        dependencies:
+          - docker
+    scripts:
+      postinstall: packaging/postinstall.sh
+      preremove: packaging/preremove.sh
+      postremove: packaging/postremove.sh
+
+release:
+  draft: false
+  prerelease: auto
+  name_template: "dup {{ .Tag }}"
+  footer: |
+    ## Install
+
+    ```sh
+    curl -fsSL https://raw.githubusercontent.com/9technologygroup/docker-updater/main/install.sh | sudo sh
+    ```
+
+    Or grab the tarball for your architecture above, extract it, and run `sudo ./install.sh`.
+
+    Debian/Ubuntu and RHEL packages are attached too:
+
+    ```sh
+    sudo dpkg -i dup_linux_amd64.deb
+    sudo rpm -i dup_linux_amd64.rpm
+    ```
+
+    Verify a download against `checksums.txt`:
+
+    ```sh
+    sha256sum -c checksums.txt --ignore-missing
+    ```
+
+    ## Upgrading
+
+    Re-running the installer or the package manager replaces both binaries and
+    keeps `/etc/dup/config.yml`, the bearer token and the GitHub secret. The
+    ownership audit runs before either service is started.

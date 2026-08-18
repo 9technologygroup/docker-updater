@@ -1,0 +1,49 @@
+[Unit]
+Description=dup API (unprivileged)
+Documentation=https://github.com/PatchMon/docker-updater
+After=network-online.target dup-agent.service
+Wants=network-online.target
+Requires=dup-agent.service
+
+[Service]
+Type=simple
+User=dup
+Group=dup
+ExecStart=/usr/bin/dup serve --config /etc/dup/config.yml
+Restart=always
+RestartSec=5
+TimeoutStopSec=60
+UMask=0077
+
+CapabilityBoundingSet=
+AmbientCapabilities=
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectProc=invisible
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectHostname=true
+ProtectClock=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+SystemCallArchitectures=native
+MemoryMax=128M
+TasksMax=64
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=dup
+
+[Install]
+WantedBy=multi-user.target

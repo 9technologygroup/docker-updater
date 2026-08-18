@@ -1,0 +1,147 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Test
+        run: go test -race -count=1 ./...
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Verify formatting
+        run: |
+          unformatted="$(gofmt -s -l .)"
+          if [ -n "${unformatted}" ]; then
+            echo "These files need gofmt -s:"
+            echo "${unformatted}"
+            exit 1
+          fi
+
+      - name: Verify go.mod is tidy
+        run: |
+          go mod tidy
+          if ! git diff --quiet -- go.mod go.sum; then
+            echo "go.mod/go.sum are not tidy; run 'go mod tidy'"
+            git diff -- go.mod go.sum
+            exit 1
+          fi
+
+      - name: Vet
+        run: go vet ./...
+
+      # Built from source with this project's own toolchain. A prebuilt
+      # golangci-lint compiled against an older Go refuses to load a go.mod
+      # targeting a newer one, which breaks every time the project moves ahead.
+      - name: Install golangci-lint
+        run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
+
+      - name: golangci-lint
+        run: golangci-lint run ./...
+
+      - name: Shellcheck
+        run: shellcheck -S warning install.sh packaging/*.sh
+
+  privilege-split:
+    name: Privilege split
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # The whole security model rests on the unprivileged binary being unable
+      # to reach docker. Assert it here as well as in the test suite, so it
+      # cannot regress through a stray import.
+      - name: dup must not link any docker-calling package
+        run: |
+          for pkg in internal/compose internal/pipeline internal/discover internal/agentd; do
+            if go list -deps ./cmd/dup | grep -qx "github.com/PatchMon/docker-updater/${pkg}"; then
+              echo "cmd/dup links ${pkg}, which can execute docker"
+              exit 1
+            fi
+          done
+          echo "cmd/dup links no docker-calling package"
+
+  crosscheck:
+    name: Cross-compile
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # Uses goreleaser so this builds exactly the release matrix, rather than a
+      # second list that can drift away from .goreleaser.yaml.
+      - name: Build every release target
+        uses: goreleaser/goreleaser-action@v7
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: build --snapshot --clean
+
+  goreleaser:
+    name: Validate release config
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Check .goreleaser.yaml
+        uses: goreleaser/goreleaser-action@v7
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: check

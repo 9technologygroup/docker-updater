@@ -1,0 +1,62 @@
+listen: "127.0.0.1:7788"
+log_level: info
+
+agent_socket: /run/dup/agent.sock
+agent_peer_user: dup
+
+tls:
+  self_signed: false
+  cert_file: ""
+  key_file: ""
+  hosts: []
+
+allow_from: []
+trusted_proxies: []
+
+cors:
+  allowed_origins: []
+
+auth:
+  bearer_token_file: /etc/dup/bearer.token
+  github_secret_file: /etc/dup/github.secret
+
+defaults:
+  check_interval: 6h
+  soak: 30m
+  pull_timeout: 10m
+  health_timeout: 3m
+  stability_window: 15s
+  job_timeout: 25m
+  rollback: true
+
+notify:
+  url: ""
+  timeout: 15s
+  headers: {}
+
+targets:
+  - name: example
+    dir: /opt/example
+    compose_file: docker-compose.yml
+
+  - name: example-auto
+    dir: /opt/example-auto
+    compose_file: docker-compose.yml
+    auto_update: true
+    check_interval: 6h
+    soak: 30m
+
+  - name: example-with-backup
+    dir: /opt/example-db
+    compose_file: docker-compose.yml
+    pre_update:
+      command: /usr/local/bin/backup-example-db
+      timeout: 15m
+      required: true
+
+  - name: example-pinned
+    dir: /opt/example-pinned
+    compose_file: docker-compose.yml
+    image_tag_env: APP_VERSION
+    services: [app]
+    health_timeout: 5m
