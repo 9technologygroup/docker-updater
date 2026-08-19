@@ -1026,8 +1026,13 @@ each recognised platform gets exactly what its own docs specify instead.
 
 **The fallback carries `text` as well.** For any host dup does not recognise, the full
 payload is sent with a `text` field holding the same sentence as `summary`. n8n, Zapier and
-anything reading the existing fields are unaffected, and a self-hosted Mattermost or Rocket
-Chat, which accept Slack's shape, render it without configuration.
+anything reading the existing fields are unaffected, and a self-hosted Mattermost, whose
+incoming webhooks take `{"text": "..."}`, renders it without configuration.
+
+Rocket.Chat is not in that group. Its incoming webhooks use their own payload and its
+documentation makes no claim of accepting Slack's, so a translation script on the
+Rocket.Chat side is what people use. Point `notify.url` at n8n instead if you want a
+one-liner.
 
 **Microsoft Teams needs the format setting.** Teams is the one platform detection cannot
 help with. The old Office 365 connector webhooks, which took a simple JSON body, were
@@ -1042,8 +1047,10 @@ notify:
   format: teams
 ```
 
-Teams also throttles above four requests a second and caps a message at 28 KB, neither of
-which dup will reach posting once per finished update.
+Teams also throttles above four requests a second and caps a message at 28 KB. Google Chat
+is tighter still, at one request a second per space, shared by every webhook posting into
+it. Neither matters for one post per finished update unless a lot of stacks finish in the
+same second.
 
 **Overriding detection** is what the other values are for: `dup`, `discord`, `slack`,
 `teams`, `google-chat`. Reach for one when the endpoint is behind a proxy or on a custom
