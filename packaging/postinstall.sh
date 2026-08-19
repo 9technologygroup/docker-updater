@@ -23,6 +23,13 @@ mkdir -p /var/lib/dup
 chown dup:dup /var/lib/dup
 chmod 0755 /var/lib/dup
 
+# Shipped root:root by the package, because the dup group does not exist until
+# this script runs. Matched to what install.sh leaves behind.
+if [ -f /etc/dup/config.example.yml ]; then
+    chown root:dup /etc/dup/config.example.yml
+    chmod 0640 /etc/dup/config.example.yml
+fi
+
 for secret in bearer.token github.secret; do
     if [ ! -f "/etc/dup/${secret}" ]; then
         if command -v openssl >/dev/null 2>&1; then

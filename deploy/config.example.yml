@@ -58,21 +58,53 @@ defaults:
   job_timeout: 25m
   rollback: true
 
-# The format defaults to auto, which reads the destination off the url and
-# sends what that platform documents: content for discord, text for slack and
-# google chat, the full payload plus text for anything else. Set it explicitly
-# only for teams, or for an endpoint behind a proxy or on a custom domain.
+# Where to POST the result of a finished job, and of anything the scheduler
+# learns. Leave url empty to disable the lot. Test it without running an
+# update, at any time, with:  sudo dup notify
 notify:
   url: ""
+
+  # Which body to send. auto reads the destination off the url and is almost
+  # always right: content for discord, text for slack and google chat, the full
+  # payload plus text for anything else. Set it explicitly for teams, whose
+  # schema is whatever your power automate flow was built to accept, or for an
+  # endpoint behind a proxy or on a custom domain where the host reveals
+  # nothing. One of: auto, dup, discord, slack, teams, google-chat
+  format: auto
+
   timeout: 15s
+
+  # Extra headers, for an auth token on the receiving end.
   headers: {}
-  # Which events to post. Anything left out keeps its default, so naming one
-  # does not silence the others. update_available is the only moment you can
-  # still act on: the image is seen, the soak has started, nothing is recreated
-  # yet. Check failures are announced on the transition, not every interval.
+
+  # Which events send a notification, and what each is by default. Leave the
+  # block out entirely and every default below applies. Naming one event does
+  # not silence the rest, so list only what you want to change. A key that is
+  # not an event is refused when the config loads, rather than doing nothing.
+  #
+  # update_available is the one worth turning on. It is the only moment you can
+  # still act: the image has been seen, the soak has started, and nothing has
+  # been recreated yet. It carries the changed services and the time it will
+  # apply. update_started lands seconds before containers go down, too late to
+  # act on, but useful for a deploy log.
+  #
+  # check_failed and check_recovered are announced when a stack starts failing
+  # its registry check and again when it works, not every check_interval. An
+  # alert every six hours about the same thing is how people learn to ignore
+  # alerts.
+  #
   # events:
-  #   update_available: true
-  #   update_no_change: false
+  #   update_available: false
+  #   update_withdrawn: false
+  #   update_started: false
+  #   update_succeeded: true
+  #   update_no_change: true
+  #   update_dry_run: true
+  #   update_failed: true
+  #   update_rolled_back: true
+  #   update_rollback_failed: true
+  #   check_failed: true
+  #   check_recovered: true
 
 # No stacks yet, so dup starts and manages nothing. That is deliberate: run
 #
