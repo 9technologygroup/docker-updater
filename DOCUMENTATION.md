@@ -1051,6 +1051,25 @@ quackback  running
     pull                     ...    2.8s
 ```
 
+While a step is waiting on containers, the services it is watching are listed under it with
+their state and health. A health check can sit there for minutes, and this is what says
+which service is holding it up rather than leaving you to guess:
+
+```
+patchmon  running
+  changed: database, server
+  job 35a0e4071379c34b in 26.601s
+    up                       ok     6.9s
+    health                   ...    17.4s
+      database  running    healthy
+      server    running    starting
+```
+
+Only the services the health check is actually waiting on are listed, so a sidecar you had
+deliberately stopped does not clutter it. A service with no `HEALTHCHECK` shows as
+`no healthcheck`, which is a standing reminder that `stability_window` is the only signal
+you have for it.
+
 Piped or redirected there is no ANSI at all, and no redrawing. Each step is printed once, on
 its own line, as it completes, which is what makes it readable in a log or in CI:
 

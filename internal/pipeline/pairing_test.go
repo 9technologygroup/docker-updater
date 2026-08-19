@@ -46,16 +46,18 @@ func (p *pairingSink) AddStep(s job.Step) {
 	p.calls = append(p.calls, "add:"+s.Name)
 }
 
-func (p *pairingSink) SetBefore([]job.ServiceState) {}
-func (p *pairingSink) SetAfter([]job.ServiceState)  {}
-func (p *pairingSink) SetChanged([]string)          {}
+func (p *pairingSink) SetProgress([]job.ServiceState) {}
+func (p *pairingSink) SetBefore([]job.ServiceState)   {}
+func (p *pairingSink) SetAfter([]job.ServiceState)    {}
+func (p *pairingSink) SetChanged([]string)            {}
 
 type teeSink struct {
 	a, b job.Sink
 }
 
-func (t teeSink) StartStep(name string) { t.a.StartStep(name); t.b.StartStep(name) }
-func (t teeSink) AddStep(s job.Step)    { t.a.AddStep(s); t.b.AddStep(s) }
+func (t teeSink) StartStep(name string)            { t.a.StartStep(name); t.b.StartStep(name) }
+func (t teeSink) AddStep(s job.Step)               { t.a.AddStep(s); t.b.AddStep(s) }
+func (t teeSink) SetProgress(s []job.ServiceState) { t.a.SetProgress(s); t.b.SetProgress(s) }
 func (t teeSink) SetBefore(s []job.ServiceState) {
 	t.a.SetBefore(s)
 	t.b.SetBefore(s)

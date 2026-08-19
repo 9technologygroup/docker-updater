@@ -37,6 +37,7 @@ func (s State) OK() bool {
 
 type Sink interface {
 	StartStep(name string)
+	SetProgress([]ServiceState)
 	AddStep(Step)
 	SetBefore([]ServiceState)
 	SetAfter([]ServiceState)
@@ -84,6 +85,7 @@ type Snapshot struct {
 	Before       []ServiceState `json:"before,omitempty"`
 	After        []ServiceState `json:"after,omitempty"`
 	Steps        []Step         `json:"steps,omitempty"`
+	Progress     []ServiceState `json:"progress,omitempty"`
 	StartedAt    time.Time      `json:"started_at"`
 	FinishedAt   *time.Time     `json:"finished_at,omitempty"`
 	DurationMS   int64          `json:"duration_ms"`
@@ -104,6 +106,7 @@ type Job struct {
 	before       []ServiceState
 	after        []ServiceState
 	steps        []Step
+	progress     []ServiceState
 	logBytes     int
 	startedAt    time.Time
 	finishedAt   *time.Time
@@ -166,6 +169,12 @@ func (j *Job) AddStep(s Step) {
 	j.steps = append(j.steps, s)
 }
 
+func (j *Job) SetProgress(states []ServiceState) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	j.progress = states
+}
+
 func (j *Job) SetBefore(states []ServiceState) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
@@ -191,6 +200,7 @@ func (j *Job) finish(state State, message string) {
 		return
 	}
 	now := time.Now().UTC()
+	j.progress = nil
 	j.state = state
 	j.message = sanitise(message, 1000)
 	j.finishedAt = &now
@@ -224,6 +234,7 @@ func (j *Job) Snapshot() Snapshot {
 		Before:       append([]ServiceState(nil), j.before...),
 		After:        append([]ServiceState(nil), j.after...),
 		Steps:        append([]Step(nil), j.steps...),
+		Progress:     append([]ServiceState(nil), j.progress...),
 		StartedAt:    j.startedAt,
 		FinishedAt:   j.finishedAt,
 	}

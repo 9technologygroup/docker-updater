@@ -301,3 +301,43 @@ func TestScanTableTTYRewritesThePlaceholderRow(t *testing.T) {
 		t.Errorf("the placeholder survived into the final row: %q", buf.String())
 	}
 }
+
+func TestRunningStepNamesTheServicesItIsWaitingOn(t *testing.T) {
+	now := time.Now()
+	snap := job.Snapshot{
+		Target: "patchmon", State: job.StateRunning,
+		Steps: []job.Step{
+			{Name: "up", OK: true, DurationMS: 6900},
+			{Name: "health", Running: true, StartedAt: now.Add(-17 * time.Second)},
+		},
+		Progress: []job.ServiceState{
+			{Service: "database", State: "running", Health: "healthy"},
+			{Service: "server", State: "running", Health: "starting"},
+		},
+	}
+
+	got := strings.Join(jobStepLines(snap, now, true), "\n")
+	for _, want := range []string{"database", "healthy", "server", "starting"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the live frame does not mention %q:\n%s", want, got)
+		}
+	}
+	if i, j := strings.Index(got, "health "), strings.Index(got, "database"); i > j {
+		t.Errorf("services must be listed under the step they belong to:\n%s", got)
+	}
+
+	// A completed step has nothing in flight, so it must not carry the list.
+	snap.Steps[1].Running = false
+	snap.Steps[1].OK = true
+	snap.Progress = nil
+	if out := strings.Join(jobStepLines(snap, now, true), "\n"); strings.Contains(out, "database") {
+		t.Errorf("a finished step should not list services:\n%s", out)
+	}
+}
+
+func TestProgressLinesSayWhenThereIsNoHealthcheck(t *testing.T) {
+	got := strings.Join(progressLines([]job.ServiceState{{Service: "web", State: "running"}}), "\n")
+	if !strings.Contains(got, "no healthcheck") {
+		t.Errorf("an empty health field must say so rather than render blank: %q", got)
+	}
+}

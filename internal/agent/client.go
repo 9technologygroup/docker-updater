@@ -145,6 +145,8 @@ func (c *Client) consume(body io.Reader, sink job.Sink) (job.State, string, erro
 			if ev.Step != nil {
 				sink.AddStep(*ev.Step)
 			}
+		case wire.EventProgress:
+			sink.SetProgress(ev.States)
 		case wire.EventBefore:
 			sink.SetBefore(ev.States)
 		case wire.EventAfter:

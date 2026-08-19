@@ -426,6 +426,10 @@ func (s *streamSink) StartStep(name string) {
 	s.emit(wire.Event{Type: wire.EventStepStart, Step: &job.Step{Name: name, Running: true}})
 }
 
+func (s *streamSink) SetProgress(states []job.ServiceState) {
+	s.emit(wire.Event{Type: wire.EventProgress, States: states})
+}
+
 func (s *streamSink) AddStep(step job.Step) { s.emit(wire.Event{Type: wire.EventStep, Step: &step}) }
 
 func (s *streamSink) SetBefore(states []job.ServiceState) {

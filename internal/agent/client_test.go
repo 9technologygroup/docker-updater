@@ -8,18 +8,20 @@ import (
 )
 
 type captureSink struct {
-	started []string
-	steps   []job.Step
-	before  []job.ServiceState
-	after   []job.ServiceState
-	changed []string
+	started  []string
+	progress []job.ServiceState
+	steps    []job.Step
+	before   []job.ServiceState
+	after    []job.ServiceState
+	changed  []string
 }
 
-func (c *captureSink) StartStep(name string)          { c.started = append(c.started, name) }
-func (c *captureSink) AddStep(s job.Step)             { c.steps = append(c.steps, s) }
-func (c *captureSink) SetBefore(s []job.ServiceState) { c.before = s }
-func (c *captureSink) SetAfter(s []job.ServiceState)  { c.after = s }
-func (c *captureSink) SetChanged(services []string)   { c.changed = services }
+func (c *captureSink) StartStep(name string)            { c.started = append(c.started, name) }
+func (c *captureSink) SetProgress(s []job.ServiceState) { c.progress = s }
+func (c *captureSink) AddStep(s job.Step)               { c.steps = append(c.steps, s) }
+func (c *captureSink) SetBefore(s []job.ServiceState)   { c.before = s }
+func (c *captureSink) SetAfter(s []job.ServiceState)    { c.after = s }
+func (c *captureSink) SetChanged(services []string)     { c.changed = services }
 
 func TestClientConsumesStreamAndRequiresResult(t *testing.T) {
 	c := &Client{}

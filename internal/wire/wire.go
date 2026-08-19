@@ -17,6 +17,7 @@ const (
 
 	EventStep      = "step"
 	EventStepStart = "step_start"
+	EventProgress  = "progress"
 	EventBefore    = "before"
 	EventAfter     = "after"
 	EventChanged   = "changed"

@@ -18,6 +18,7 @@ const (
 	scanResultCol = 16
 
 	maxStepOutputLines = 12
+	maxProgressLines   = 12
 )
 
 func stdoutIsTTY() bool {
@@ -127,6 +128,9 @@ func jobStepLines(snap job.Snapshot, now time.Time, live bool) []string {
 	var lines []string
 	for _, s := range snap.Steps {
 		lines = append(lines, stepLine(s, now))
+		if s.Running {
+			lines = append(lines, progressLines(snap.Progress)...)
+		}
 		if live {
 			if s.Error != "" {
 				lines = append(lines, "      "+s.Error)
@@ -136,6 +140,38 @@ func jobStepLines(snap job.Snapshot, now time.Time, live bool) []string {
 		lines = append(lines, stepDetail(s)...)
 	}
 	return fitLines(lines, live)
+}
+
+// progressLines name the services a running step is waiting on, so a health
+// check that sits there for minutes says which service is holding it up.
+func progressLines(states []job.ServiceState) []string {
+	if len(states) == 0 {
+		return nil
+	}
+	width := 0
+	for _, st := range states {
+		if len(st.Service) > width {
+			width = len(st.Service)
+		}
+	}
+	shown := states
+	var extra int
+	if len(shown) > maxProgressLines {
+		extra = len(shown) - maxProgressLines
+		shown = shown[:maxProgressLines]
+	}
+	lines := make([]string, 0, len(shown)+1)
+	for _, st := range shown {
+		health := st.Health
+		if health == "" {
+			health = "no healthcheck"
+		}
+		lines = append(lines, fmt.Sprintf("      %-*s  %-10s %s", width, st.Service, orDash(st.State), health))
+	}
+	if extra > 0 {
+		lines = append(lines, fmt.Sprintf("      and %d more", extra))
+	}
+	return lines
 }
 
 func stepLine(s job.Step, now time.Time) string {
