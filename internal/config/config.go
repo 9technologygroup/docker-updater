@@ -534,15 +534,17 @@ func (c *Config) validateNotify() error {
 		return fmt.Errorf("notify: url must have a host")
 	}
 	switch c.Notify.Format {
-	case "", "dup", "discord":
+	case "", "auto", "dup", "discord", "slack", "teams", "google-chat":
 	default:
-		return fmt.Errorf("notify: format %q is not one of dup or discord", c.Notify.Format)
+		return fmt.Errorf("notify: format %q is not one of auto, dup, discord, slack, teams or google-chat", c.Notify.Format)
 	}
 	// A warning, never an error: dup check gates ExecStartPre for both units,
-	// and a webhook nobody reads is not a reason to refuse to start.
-	if c.Notify.Format != "discord" && IsDiscordWebhook(c.Notify.URL) {
+	// and a webhook nobody reads is not a reason to refuse to start. Only fires
+	// when the operator has overridden the detection with something that cannot
+	// work, since the default resolves this on its own.
+	if c.Notify.Format == "dup" && IsDiscordWebhook(c.Notify.URL) {
 		c.warnings = append(c.warnings,
-			"notify.url is a discord webhook, which refuses dup's payload; set notify.format: discord, and check it with: sudo dup notify")
+			"notify.format is dup but notify.url is a discord webhook, which refuses that payload; remove the format line to let dup detect it, and check with: sudo dup notify")
 	}
 	return nil
 }

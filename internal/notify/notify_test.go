@@ -143,8 +143,8 @@ func TestHeadersAreSentAndDefaultFormatIsDup(t *testing.T) {
 	n := New(config.Notify{URL: srv.URL, Timeout: 5 * time.Second,
 		Headers: map[string]string{"X-Source": "dup", "Authorization": "Bearer t"}}, "web01", quietLog())
 
-	if n.Format() != FormatDup {
-		t.Errorf("format = %q, want the default", n.Format())
+	if n.Format() != FormatAuto || n.Resolved() != FormatDup {
+		t.Errorf("format = %q resolved = %q, want auto resolving to dup for an unknown host", n.Format(), n.Resolved())
 	}
 	if _, err := n.Deliver(context.Background(), snap(), false); err != nil {
 		t.Fatal(err)
@@ -160,4 +160,59 @@ func TestNoURLMeansNoNotifierAndANilOneIsSafe(t *testing.T) {
 		t.Fatal("an empty url must not build a notifier")
 	}
 	n.Notify(context.Background(), snap())
+}
+
+func TestDetectReadsThePlatformOffTheHostname(t *testing.T) {
+	cases := map[string]string{
+		"https://discord.com/api/webhooks/1/abc":              FormatDiscord,
+		"https://discordapp.com/api/webhooks/1/abc":           FormatDiscord,
+		"https://ptb.discord.com/api/webhooks/1/abc":          FormatDiscord,
+		"https://hooks.slack.com/services/T/B/X":              FormatSlack,
+		"https://chat.googleapis.com/v1/spaces/S/messages":    FormatGoogleChat,
+		"https://n8n.example.com/webhook/dup":                 FormatDup,
+		"https://mattermost.example.com/hooks/abc":            FormatDup,
+		"https://prod-01.uksouth.logic.azure.com/workflows/x": FormatDup,
+		"not a url at all":                                    FormatDup,
+	}
+	for raw, want := range cases {
+		if got := Detect(raw); got != want {
+			t.Errorf("Detect(%q) = %q, want %q", raw, got, want)
+		}
+	}
+}
+
+// Every recognised platform gets the exact body its own documentation asks for,
+// so nothing depends on a vendor ignoring fields it does not know.
+func TestEachPlatformGetsItsDocumentedBody(t *testing.T) {
+	cases := []struct {
+		format string
+		field  string
+		only   bool
+	}{
+		{FormatDiscord, "content", true},
+		{FormatSlack, "text", true},
+		{FormatGoogleChat, "text", true},
+		{FormatTeams, "text", true},
+		{FormatDup, "text", false},
+	}
+	for _, c := range cases {
+		srv, got, _ := recorder(t, 200, "")
+		n := New(config.Notify{URL: srv.URL, Format: c.format, Timeout: 5 * time.Second}, "web01", quietLog())
+		if _, err := n.Deliver(context.Background(), snap(), false); err != nil {
+			t.Fatalf("%s: %v", c.format, err)
+		}
+		var p map[string]any
+		if err := json.Unmarshal(*got, &p); err != nil {
+			t.Fatalf("%s: not json: %v", c.format, err)
+		}
+		if _, ok := p[c.field]; !ok {
+			t.Errorf("%s: body has no %q: %s", c.format, c.field, *got)
+		}
+		if c.only && len(p) != 1 {
+			t.Errorf("%s: sent %d fields, want only %q: %s", c.format, len(p), c.field, *got)
+		}
+		if !c.only && p["state"] != "succeeded" {
+			t.Errorf("%s: the full payload must survive alongside text: %s", c.format, *got)
+		}
+	}
 }

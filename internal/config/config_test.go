@@ -695,12 +695,22 @@ func TestDiscordWebhookDetection(t *testing.T) {
 // dup check gates ExecStartPre for both units, so a webhook nobody reads must
 // never be the reason a host will not start dup.
 func TestADiscordURLWithoutTheDiscordFormatWarnsRatherThanFailing(t *testing.T) {
-	c := &Config{Notify: Notify{URL: "https://discord.com/api/webhooks/123/abc"}}
+	// Explicitly overriding detection with a shape discord refuses is the only
+	// case worth warning about; the default works it out on its own.
+	c := &Config{Notify: Notify{URL: "https://discord.com/api/webhooks/123/abc", Format: "dup"}}
 	if err := c.validateNotify(); err != nil {
 		t.Fatalf("validateNotify returned an error, want a warning: %v", err)
 	}
-	if len(c.Warnings()) != 1 || !strings.Contains(c.Warnings()[0], "format: discord") {
+	if len(c.Warnings()) != 1 || !strings.Contains(c.Warnings()[0], "detect") {
 		t.Errorf("warnings = %v, want one naming the fix", c.Warnings())
+	}
+
+	def := &Config{Notify: Notify{URL: "https://discord.com/api/webhooks/123/abc"}}
+	if err := def.validateNotify(); err != nil {
+		t.Fatal(err)
+	}
+	if len(def.Warnings()) != 0 {
+		t.Errorf("warnings = %v, want none when detection is left to do its job", def.Warnings())
 	}
 
 	ok := &Config{Notify: Notify{URL: "https://discord.com/api/webhooks/123/abc", Format: "discord"}}
@@ -713,8 +723,12 @@ func TestADiscordURLWithoutTheDiscordFormatWarnsRatherThanFailing(t *testing.T) 
 }
 
 func TestNotifyFormatIsValidated(t *testing.T) {
-	c := &Config{Notify: Notify{URL: "https://example.com/hook", Format: "slack"}}
-	if err := c.validateNotify(); err == nil {
+	if err := (&Config{Notify: Notify{URL: "https://example.com/hook", Format: "hipchat"}}).validateNotify(); err == nil {
 		t.Fatal("an unknown notify format must be refused")
+	}
+	for _, f := range []string{"", "auto", "dup", "discord", "slack", "teams", "google-chat"} {
+		if err := (&Config{Notify: Notify{URL: "https://example.com/hook", Format: f}}).validateNotify(); err != nil {
+			t.Errorf("format %q was refused: %v", f, err)
+		}
 	}
 }

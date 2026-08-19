@@ -95,7 +95,11 @@ func runNotify(args []string) error {
 
 func printNotifyConfig(w io.Writer, cfg *config.Config, n *notify.Notifier) {
 	_, _ = fmt.Fprintf(w, "url      %s\n", n.URL())
-	_, _ = fmt.Fprintf(w, "format   %s\n", n.Format())
+	if n.Detected() {
+		_, _ = fmt.Fprintf(w, "format   %s, detected from the url as %s\n", n.Format(), n.Resolved())
+	} else {
+		_, _ = fmt.Fprintf(w, "format   %s, set in the config\n", n.Resolved())
+	}
 	_, _ = fmt.Fprintf(w, "timeout  %s\n", cfg.Notify.Timeout)
 
 	if len(cfg.Notify.Headers) == 0 {

@@ -319,7 +319,7 @@ over both forms.
 | Key | Default | Meaning |
 |---|---|---|
 | `url` | empty, disabled | Where to POST the result of every finished job. `http` or `https` only |
-| `format` | `dup` | `dup` posts the JSON below. `discord` posts `{"content": "<summary>"}`, which is the only shape a Discord webhook accepts |
+| `format` | `auto` | Which body to POST. `auto` reads the destination off the URL and is almost always right. See [Chat platforms](#chat-platforms) for the full list |
 | `timeout` | `15s` | How long to wait for it |
 | `headers` | none | Extra headers, for an auth token on the receiving end |
 
@@ -1003,28 +1003,59 @@ update. `--quiet` reduces it to one line and an exit code, for cron.
 The response body is the point. A webhook that refuses a payload says why in its body, and
 that is the part you cannot see anywhere else.
 
-### Posting straight to Discord
+### Chat platforms
 
-A Discord webhook URL does not accept dup's payload. Discord refuses any body without
-`content`, `embeds` or `files`, so it answers `400` with `Cannot send an empty message` and
-nothing appears in your channel. Set the format:
+You should not have to configure this. `notify.format` defaults to `auto`, which reads the
+destination off the URL and sends the body that platform's own documentation asks for:
+
+| URL host | Format | Body sent |
+|---|---|---|
+| `discord.com`, `discordapp.com` | `discord` | `{"content": "<summary>"}` |
+| `hooks.slack.com` | `slack` | `{"text": "<summary>"}` |
+| `chat.googleapis.com` | `google-chat` | `{"text": "<summary>"}` |
+| anything else | `dup` | The full JSON above, with `text` added |
+
+Paste a Discord or Slack webhook URL into `notify.url` and it works. Nothing else to set.
+
+**Why not one body that suits everything.** The obvious answer is to send `content` and
+`text` together and let each platform read the field it knows. That only works if the others
+are ignored, and **not one of these vendors documents what it does with a field it does not
+recognise**. It very probably works today. It would fail silently the day one of them
+tightens validation, and a notification that silently stops arriving is the worst kind. So
+each recognised platform gets exactly what its own docs specify instead.
+
+**The fallback carries `text` as well.** For any host dup does not recognise, the full
+payload is sent with a `text` field holding the same sentence as `summary`. n8n, Zapier and
+anything reading the existing fields are unaffected, and a self-hosted Mattermost or Rocket
+Chat, which accept Slack's shape, render it without configuration.
+
+**Microsoft Teams needs the format setting.** Teams is the one platform detection cannot
+help with. The old Office 365 connector webhooks, which took a simple JSON body, were
+disabled in May 2026. The replacement runs on Power Automate, where the schema is whatever
+the operator wired into the flow rather than a contract Microsoft publishes, and the URL
+that gets issued does not identify itself reliably. If your flow was built from the standard
+template it expects `text`, so:
 
 ```yaml
 notify:
-  url: "https://discord.com/api/webhooks/…/…"
-  format: discord
+  url: "https://…"
+  format: teams
 ```
 
-dup then posts `{"content": "<summary>"}`, which is the sentence `summary` already held. You
-lose the machine readable fields, because Discord has nowhere to put them. If you want both,
-point `notify.url` at n8n and let it post to Discord, which is what the default format is
-shaped for.
+Teams also throttles above four requests a second and caps a message at 28 KB, neither of
+which dup will reach posting once per finished update.
 
-`dup check` warns when the URL looks like a Discord webhook and the format is not set. It is
-a warning rather than an error on purpose: `dup check` gates `ExecStartPre` for both units,
-and a webhook nobody reads is not a reason for a host to refuse to start.
+**Overriding detection** is what the other values are for: `dup`, `discord`, `slack`,
+`teams`, `google-chat`. Reach for one when the endpoint is behind a proxy or on a custom
+domain, which is exactly where reading the hostname cannot tell you anything.
 
----
+Whatever you set, check it:
+
+```bash
+sudo dup notify
+```
+
+It prints which format was used and whether that was detected or configured.
 
 ## Operating it
 

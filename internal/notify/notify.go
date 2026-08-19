@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -15,9 +16,40 @@ import (
 )
 
 const (
-	FormatDup     = "dup"
-	FormatDiscord = "discord"
+	// FormatAuto picks a shape from the webhook's hostname. It is the default
+	// because no vendor documents what it does with fields it does not know, so
+	// a single body carrying every platform's field would rest on luck.
+	FormatAuto       = "auto"
+	FormatDup        = "dup"
+	FormatDiscord    = "discord"
+	FormatSlack      = "slack"
+	FormatTeams      = "teams"
+	FormatGoogleChat = "google-chat"
 )
+
+// Formats are every value notify.format accepts.
+var Formats = []string{FormatAuto, FormatDup, FormatDiscord, FormatSlack, FormatTeams, FormatGoogleChat}
+
+// Detect reads the destination off the URL. Only the hosted platforms have
+// fixed published hostnames; a self-hosted one is indistinguishable from any
+// other endpoint, so it falls back to the payload that carries everything.
+func Detect(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return FormatDup
+	}
+	host := strings.ToLower(u.Hostname())
+	switch {
+	case host == "discord.com" || host == "discordapp.com" ||
+		strings.HasSuffix(host, ".discord.com") || strings.HasSuffix(host, ".discordapp.com"):
+		return FormatDiscord
+	case host == "hooks.slack.com":
+		return FormatSlack
+	case host == "chat.googleapis.com":
+		return FormatGoogleChat
+	}
+	return FormatDup
+}
 
 // maxResponse is what is kept from a rejection. The reason a webhook refused
 // is in its body, and discarding it was why a misconfigured endpoint looked
@@ -25,18 +57,21 @@ const (
 const maxResponse = 2 << 10
 
 type Notifier struct {
-	url     string
-	format  string
-	headers map[string]string
-	client  *http.Client
-	log     *slog.Logger
-	host    string
+	url      string
+	format   string
+	resolved string
+	detected bool
+	headers  map[string]string
+	client   *http.Client
+	log      *slog.Logger
+	host     string
 }
 
 // Result is what came back, so a caller can show it rather than guess.
 type Result struct {
 	URL      string
 	Format   string
+	Detected bool
 	Status   int
 	Body     string
 	Sent     []byte
@@ -57,6 +92,7 @@ type payload struct {
 	Reason     string       `json:"reason,omitempty"`
 	Changed    []string     `json:"changed_services,omitempty"`
 	Test       bool         `json:"test,omitempty"`
+	Text       string       `json:"text,omitempty"`
 	Images     []imageState `json:"images,omitempty"`
 	DurationMS int64        `json:"duration_ms"`
 	FinishedAt time.Time    `json:"finished_at"`
@@ -75,25 +111,33 @@ func New(cfg config.Notify, host string, log *slog.Logger) *Notifier {
 	}
 	format := cfg.Format
 	if format == "" {
-		format = FormatDup
+		format = FormatAuto
+	}
+	resolved, detected := format, false
+	if format == FormatAuto {
+		resolved, detected = Detect(cfg.URL), true
 	}
 	return &Notifier{
-		url:     cfg.URL,
-		format:  format,
-		headers: cfg.Headers,
-		client:  &http.Client{Timeout: cfg.Timeout},
-		log:     log,
-		host:    host,
+		url:      cfg.URL,
+		format:   format,
+		resolved: resolved,
+		detected: detected,
+		headers:  cfg.Headers,
+		client:   &http.Client{Timeout: cfg.Timeout},
+		log:      log,
+		host:     host,
 	}
 }
 
-func (n *Notifier) URL() string    { return n.url }
-func (n *Notifier) Format() string { return n.format }
+func (n *Notifier) URL() string      { return n.url }
+func (n *Notifier) Format() string   { return n.format }
+func (n *Notifier) Resolved() string { return n.resolved }
+func (n *Notifier) Detected() bool   { return n.detected }
 
 // Deliver posts one notification and reports what happened. Notify wraps it for
 // the scheduler, which only wants it logged.
 func (n *Notifier) Deliver(ctx context.Context, snap job.Snapshot, test bool) (Result, error) {
-	res := Result{URL: n.url, Format: n.format}
+	res := Result{URL: n.url, Format: n.resolved, Detected: n.detected}
 
 	body, err := n.encode(snap, test)
 	if err != nil {
@@ -128,13 +172,22 @@ func (n *Notifier) Deliver(ctx context.Context, snap job.Snapshot, test bool) (R
 func (n *Notifier) encode(snap job.Snapshot, test bool) ([]byte, error) {
 	p := n.build(snap)
 	p.Test = test
-	if n.format == FormatDiscord {
-		// Discord refuses anything without content, embeds or files, so the
-		// summary sentence is what it gets.
+
+	switch n.resolved {
+	case FormatDiscord:
+		// Discord refuses anything without content, embeds or files.
 		return json.Marshal(struct {
 			Content string `json:"content"`
 		}{Content: p.Summary})
+	case FormatSlack, FormatGoogleChat, FormatTeams:
+		return json.Marshal(struct {
+			Text string `json:"text"`
+		}{Text: p.Summary})
 	}
+
+	// text rides along with the full payload so a self-hosted Mattermost or a
+	// Teams flow renders something, while n8n keeps every field it already reads.
+	p.Text = p.Summary
 	return json.Marshal(p)
 }
 
@@ -152,10 +205,10 @@ func (n *Notifier) Notify(ctx context.Context, snap job.Snapshot) {
 		// The body is the only thing that says why, and dropping it made a
 		// misconfigured endpoint look silent instead of broken.
 		n.log.Error("notify: rejected", "job", snap.ID, "url", n.url,
-			"status", res.Status, "format", n.format, "response", res.Body)
+			"status", res.Status, "format", n.resolved, "response", res.Body)
 		return
 	}
-	n.log.Info("notify: delivered", "job", snap.ID, "status", res.Status, "format", n.format)
+	n.log.Info("notify: delivered", "job", snap.ID, "status", res.Status, "format", n.resolved)
 }
 
 func (n *Notifier) build(snap job.Snapshot) payload {
