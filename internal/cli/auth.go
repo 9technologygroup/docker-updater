@@ -165,34 +165,69 @@ func runAuthAdd(cfg *config.Config, target string, force bool) error {
 	}
 
 	stdin := bufio.NewReader(os.Stdin)
-	var totalAttempted, totalSaved int
+	var total authTally
 	for i, t := range targets {
 		if i > 0 {
 			fmt.Println()
 		}
-		attempted, saved, err := authTarget(cfg, t, force, stdin)
+		tally, err := authTarget(cfg, t, force, stdin)
 		if err != nil {
 			return err
 		}
-		totalAttempted += attempted
-		totalSaved += saved
+		total.add(tally)
 	}
 
-	if totalAttempted > totalSaved {
-		return fmt.Errorf("%d of %d %s not saved", totalAttempted-totalSaved, totalAttempted,
-			plural(totalAttempted, "credential was", "credentials were"))
+	fmt.Println()
+	fmt.Println(total.summary())
+	if total.failed > 0 {
+		return fmt.Errorf("%d %s not stored", total.failed,
+			plural(total.failed, "registry was", "registries were"))
 	}
 	return nil
 }
 
-func authTarget(cfg *config.Config, t *config.Target, force bool, stdin *bufio.Reader) (attempted, saved int, err error) {
+// authTally separates a registry deliberately left alone from one that would
+// not take the credentials. Skipping a public registry is not a failure.
+type authTally struct {
+	saved, skipped, failed int
+}
+
+func (a *authTally) add(b authTally) {
+	a.saved += b.saved
+	a.skipped += b.skipped
+	a.failed += b.failed
+}
+
+func (a authTally) summary() string {
+	if a.saved == 0 && a.failed == 0 && a.skipped == 0 {
+		return "nothing to do"
+	}
+	parts := []string{fmt.Sprintf("stored %d", a.saved)}
+	if a.skipped > 0 {
+		parts = append(parts, fmt.Sprintf("left %d alone", a.skipped))
+	}
+	if a.failed > 0 {
+		parts = append(parts, fmt.Sprintf("could not store %d", a.failed))
+	}
+	return strings.Join(parts, ", ")
+}
+
+type authOutcome int
+
+const (
+	authSaved authOutcome = iota
+	authSkipped
+	authFailed
+)
+
+func authTarget(cfg *config.Config, t *config.Target, force bool, stdin *bufio.Reader) (tally authTally, err error) {
 	hosts, err := resolveHosts(cfg, t, stdin)
 	if err != nil {
-		return 0, 0, err
+		return tally, err
 	}
 	if len(hosts) == 0 {
 		fmt.Printf("%s: no registries found, nothing to store credentials for\n", t.Name)
-		return 0, 0, nil
+		return tally, nil
 	}
 
 	fmt.Println(t.Name)
@@ -200,7 +235,7 @@ func authTarget(cfg *config.Config, t *config.Target, force bool, stdin *bufio.R
 		normalised, nerr := dockercfg.NormaliseHost(host)
 		if nerr != nil {
 			fmt.Printf("  %v\n", nerr)
-			attempted++
+			tally.failed++
 			continue
 		}
 
@@ -209,28 +244,33 @@ func authTarget(cfg *config.Config, t *config.Target, force bool, stdin *bufio.R
 		// host's update instead of everything this one has saved so far.
 		store, rerr := dockercfg.Read(t.DockerConfigDir())
 		if rerr != nil {
-			return attempted, saved, rerr
+			return tally, rerr
 		}
 		if store.Has(normalised) && !force {
-			fmt.Printf("  %s already has stored credentials, skipping (--force to replace)\n", normalised)
+			fmt.Printf("  %s already has stored credentials, leaving it alone (--force to replace)\n", normalised)
+			tally.skipped++
 			continue
 		}
-		attempted++
 
-		ok, herr := promptAndVerify(stdin, store, normalised)
+		outcome, herr := promptAndVerify(stdin, store, normalised)
 		if herr != nil {
-			return attempted, saved, herr
+			return tally, herr
 		}
-		if !ok {
+		switch outcome {
+		case authSkipped:
+			tally.skipped++
+			continue
+		case authFailed:
+			tally.failed++
 			continue
 		}
 		if werr := store.Write(t.DockerConfigDir()); werr != nil {
-			return attempted, saved, werr
+			return tally, werr
 		}
-		saved++
+		tally.saved++
 		fmt.Printf("    saved\n")
 	}
-	return attempted, saved, nil
+	return tally, nil
 }
 
 // resolveHosts asks the agent which registries a stack's images use, so the
@@ -257,25 +297,25 @@ func resolveHosts(cfg *config.Config, t *config.Target, stdin *bufio.Reader) ([]
 	return []string{host}, nil
 }
 
-func promptAndVerify(stdin *bufio.Reader, store *dockercfg.Config, host string) (bool, error) {
+func promptAndVerify(stdin *bufio.Reader, store *dockercfg.Config, host string) (authOutcome, error) {
 	fmt.Printf("  %s\n", host)
 
-	username, err := promptLine(stdin, "    username: ")
+	username, err := promptLine(stdin, "    username (blank if this registry needs no login): ")
 	if err != nil {
-		return false, err
+		return authFailed, err
 	}
 	if username == "" {
-		fmt.Println("    no username given, skipping")
-		return false, nil
+		fmt.Println("    left alone, dup will pull from it anonymously")
+		return authSkipped, nil
 	}
 
 	password, err := promptPassword(stdin, "    password: ")
 	if err != nil {
-		return false, err
+		return authFailed, err
 	}
 	if password == "" {
-		fmt.Println("    no password given, skipping")
-		return false, nil
+		fmt.Println("    left alone, no password given")
+		return authSkipped, nil
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -289,14 +329,14 @@ func promptAndVerify(stdin *bufio.Reader, store *dockercfg.Config, host string) 
 		default:
 			fmt.Printf("    could not verify, nothing saved: %v\n", verr)
 		}
-		return false, nil
+		return authFailed, nil
 	}
 
 	if serr := store.Set(host, username, password); serr != nil {
 		fmt.Printf("    %v, nothing saved\n", serr)
-		return false, nil
+		return authFailed, nil
 	}
-	return true, nil
+	return authSaved, nil
 }
 
 func promptLine(stdin *bufio.Reader, prompt string) (string, error) {

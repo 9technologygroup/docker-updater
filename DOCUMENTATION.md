@@ -499,11 +499,21 @@ and **verifies the pair against the registry before writing anything**:
 ```
 $ sudo dup auth patchmon
 patchmon
-  registry.example.com
-    username: robot$dup
+  cr.example.com
+    username (blank if this registry needs no login): robot$dup
     password:
     saved
+  ghcr.io
+    username (blank if this registry needs no login):
+    left alone, dup will pull from it anonymously
+
+stored 1, left 1 alone
 ```
+
+A stack often pulls from more than one registry, and usually only one of them needs a
+login. Press enter past the public ones. Leaving a registry alone is a choice rather than
+a failure, so it does not affect the exit code; only a registry that refused the
+credentials, or one dup could not reach to ask, does.
 
 A wrong password is rejected at the prompt and nothing is stored. A registry that could not
 be reached is reported differently, and again nothing is stored, because "we could not ask"
@@ -516,7 +526,7 @@ Worth knowing before you build anything around it:
 - Adding a credential needs a real terminal. With stdin redirected it refuses rather than
   reading a password from a pipe. `--list` and `--remove` do not prompt, so they are fine in
   a script, as long as it runs as root.
-- A registry that already has credentials stored is skipped. `--force` re-enters them.
+- A registry that already has credentials stored is left alone. `--force` re-enters them.
 - Verification is HTTPS only. dup will not follow a redirect onto another host, and will not
   use a token endpoint served over plain HTTP, so nothing a registry answers can walk your
   password somewhere else.
