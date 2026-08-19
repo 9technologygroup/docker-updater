@@ -66,6 +66,13 @@ notify:
   url: ""
   timeout: 15s
   headers: {}
+  # Which events to post. Anything left out keeps its default, so naming one
+  # does not silence the others. update_available is the only moment you can
+  # still act on: the image is seen, the soak has started, nothing is recreated
+  # yet. Check failures are announced on the transition, not every interval.
+  # events:
+  #   update_available: true
+  #   update_no_change: false
 
 # No stacks yet, so dup starts and manages nothing. That is deliberate: run
 #

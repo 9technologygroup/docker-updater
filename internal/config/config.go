@@ -13,6 +13,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -143,6 +144,60 @@ type Notify struct {
 	Format  string            `yaml:"format"`
 	Timeout time.Duration     `yaml:"timeout"`
 	Headers map[string]string `yaml:"headers"`
+	Events  map[string]bool   `yaml:"events"`
+}
+
+// The events a notification can be sent for. An update ends in exactly one of
+// the update_ outcomes; the rest come from the scheduler.
+const (
+	EventUpdateAvailable      = "update_available"
+	EventUpdateWithdrawn      = "update_withdrawn"
+	EventUpdateStarted        = "update_started"
+	EventUpdateSucceeded      = "update_succeeded"
+	EventUpdateNoChange       = "update_no_change"
+	EventUpdateDryRun         = "update_dry_run"
+	EventUpdateFailed         = "update_failed"
+	EventUpdateRolledBack     = "update_rolled_back"
+	EventUpdateRollbackFailed = "update_rollback_failed"
+	EventCheckFailed          = "check_failed"
+	EventCheckRecovered       = "check_recovered"
+)
+
+// defaultEvents keeps every outcome that already notified before this existed,
+// and adds the two failure ones. Something dup cannot do its job for is the
+// same class of news as an update that failed, and staying silent about it was
+// the reason a broken registry went unnoticed for days.
+var defaultEvents = map[string]bool{
+	EventUpdateAvailable:      false,
+	EventUpdateWithdrawn:      false,
+	EventUpdateStarted:        false,
+	EventUpdateSucceeded:      true,
+	EventUpdateNoChange:       true,
+	EventUpdateDryRun:         true,
+	EventUpdateFailed:         true,
+	EventUpdateRolledBack:     true,
+	EventUpdateRollbackFailed: true,
+	EventCheckFailed:          true,
+	EventCheckRecovered:       true,
+}
+
+// KnownEvents is every accepted key, sorted, for validation and for help text.
+func KnownEvents() []string {
+	out := make([]string, 0, len(defaultEvents))
+	for k := range defaultEvents {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// Wants reports whether this event should be sent. An unlisted event keeps its
+// default, so a config naming one event does not silence every other.
+func (n Notify) Wants(event string) bool {
+	if on, ok := n.Events[event]; ok {
+		return on
+	}
+	return defaultEvents[event]
 }
 
 type Target struct {
@@ -542,6 +597,11 @@ func (c *Config) validateNotify() error {
 	// and a webhook nobody reads is not a reason to refuse to start. Only fires
 	// when the operator has overridden the detection with something that cannot
 	// work, since the default resolves this on its own.
+	for name := range c.Notify.Events {
+		if _, ok := defaultEvents[name]; !ok {
+			return fmt.Errorf("notify: %q is not an event; one of %s", name, strings.Join(KnownEvents(), ", "))
+		}
+	}
 	if c.Notify.Format == "dup" && IsDiscordWebhook(c.Notify.URL) {
 		c.warnings = append(c.warnings,
 			"notify.format is dup but notify.url is a discord webhook, which refuses that payload; remove the format line to let dup detect it, and check with: sudo dup notify")

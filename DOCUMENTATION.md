@@ -322,6 +322,7 @@ over both forms.
 | `format` | `auto` | Which body to POST. `auto` reads the destination off the URL and is almost always right. See [Chat platforms](#chat-platforms) for the full list |
 | `timeout` | `15s` | How long to wait for it |
 | `headers` | none | Extra headers, for an auth token on the receiving end |
+| `events` | see below | Which events to send. Each key is a boolean, and anything left out keeps its default |
 
 ### `defaults`
 
@@ -988,6 +989,61 @@ When `notify.url` is set, every finished job POSTs a summary there:
 ```
 
 `ok` is there so n8n can branch without parsing prose. `trigger` is `api`, `github` or `auto`.
+
+### Choosing what gets sent
+
+`notify.events` decides which of these are posted. Every key is optional; anything you leave
+out keeps its default, so naming one event does not silence the rest.
+
+| Event | Default | Fires when |
+|---|---|---|
+| `update_available` | off | A new image is first seen and the soak starts. Carries the changed services and `applies_at` |
+| `update_withdrawn` | off | An image that was soaking disappeared or was replaced, so nothing will be applied |
+| `update_started` | off | A job begins, seconds before containers are recreated |
+| `update_succeeded` | **on** | An update completed and stayed healthy |
+| `update_no_change` | **on** | Nothing to pull and everything already healthy |
+| `update_dry_run` | **on** | A dry run finished |
+| `update_failed` | **on** | An update failed, or rollback was disabled |
+| `update_rolled_back` | **on** | The new images were unhealthy and the previous ones are running again |
+| `update_rollback_failed` | **on** | The update failed and so did the rollback. This one needs a person |
+| `check_failed` | **on** | A scheduled registry check errored, for example bad credentials |
+| `check_recovered` | **on** | A stack that was failing its check is working again |
+
+```yaml
+notify:
+  url: "https://discord.com/api/webhooks/…/…"
+  events:
+    update_available: true
+    update_no_change: false
+```
+
+Every payload carries an `event` field naming which of these it is, so a receiver can branch
+on it rather than inferring from `state`.
+
+**`update_available` is the one worth turning on.** It is the only moment in the cycle where
+you can still act: the image has been seen, the soak has started, and nothing has been
+recreated yet. `update_started` arrives seconds before containers go down, which is too late
+to do anything with, so it is off unless you want it for a deploy log.
+
+**Check failures are announced on the transition, not on every check.** A stack whose
+registry credentials are wrong fails every `check_interval`, and a notification every six
+hours for the same problem is how people learn to ignore notifications. You get one when it
+starts failing and one when it recovers:
+
+```
+10:00  check_failed     patchmon
+16:00  (silent, still broken)
+22:00  (silent, still broken)
+04:00  check_recovered  patchmon
+```
+
+**A typo is refused at load** rather than silently doing nothing, so `update_faild: true`
+fails `dup check` and names the valid keys.
+
+**On upgrade:** every outcome that notified before still does. `check_failed` and
+`check_recovered` are new and default to on, because dup being unable to check a stack is
+the same class of news as an update failing, and staying quiet about it is why a broken
+registry can go unnoticed for days. Set them to `false` if you would rather not know.
 
 ### Testing it without running an update
 

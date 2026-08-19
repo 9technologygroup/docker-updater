@@ -87,6 +87,9 @@ func runServe(args []string) error {
 		manager = manager.WithRecorder(hist)
 	}
 	scheduler := schedule.New(cfg, client, manager, log)
+	if notifier != nil {
+		scheduler = scheduler.WithAnnouncer(notifier)
+	}
 
 	checker := selfupdate.New()
 	srv := server.New(cfg, manager, log, host, version.Short()).
