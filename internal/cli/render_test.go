@@ -169,8 +169,11 @@ func TestTTYRendererRedrawsOneBlockInPlace(t *testing.T) {
 	if !strings.HasPrefix(second, "\x1b[3A") {
 		t.Errorf("the redraw did not move up over the 3 lines it drew before: %q", second)
 	}
-	if strings.Count(second, "\x1b[2K") != 4 {
-		t.Errorf("the redraw cleared %d lines, want 4: %q", strings.Count(second, "\x1b[2K"), second)
+	if !strings.Contains(second, "\x1b[0J") {
+		t.Errorf("the redraw did not clear the old block to end of screen: %q", second)
+	}
+	if r.lines != 4 {
+		t.Errorf("tracked %d lines after the redraw, want 4", r.lines)
 	}
 
 	buf.Reset()
@@ -198,8 +201,8 @@ func TestLiveLinesAreFoldedToOneScreenLineEach(t *testing.T) {
 		if strings.ContainsAny(l, "\n\t") {
 			t.Errorf("live line still contains a newline or tab: %q", l)
 		}
-		if len(l) > liveWidth {
-			t.Errorf("live line is %d chars, want at most %d: %q", len(l), liveWidth, l)
+		if w := liveWidth(); len(l) > w {
+			t.Errorf("live line is %d chars, want at most %d: %q", len(l), w, l)
 		}
 	}
 	if got := jobStepLines(snap, time.Now(), false); !strings.Contains(got[1], "\n") {
@@ -339,5 +342,36 @@ func TestProgressLinesSayWhenThereIsNoHealthcheck(t *testing.T) {
 	got := strings.Join(progressLines([]job.ServiceState{{Service: "web", State: "running"}}), "\n")
 	if !strings.Contains(got, "no healthcheck") {
 		t.Errorf("an empty health field must say so rather than render blank: %q", got)
+	}
+}
+
+// A wrapped line occupies more than one screen row, so clearing one row per
+// logical line left the previous frame showing through the final block.
+func TestFinalBlockDoesNotRedrawOverTheLiveOne(t *testing.T) {
+	var buf bytes.Buffer
+	r := newJobRenderer(&buf, true)
+
+	r.update(snapshot(job.StateRunning, job.Step{Name: "validate", OK: true, DurationMS: 83}))
+	buf.Reset()
+
+	long := "dry run: nothing to do, the whole stack in /opt/patchmon/npmplus is already on the " +
+		"latest images (1 container(s) running). Images were pulled so the comparison is real; " +
+		"nothing was recreated"
+	final := snapshot(job.StateDryRun, job.Step{Name: "validate", OK: true, DurationMS: 83})
+	final.Message = long
+	r.finish(final)
+
+	out := buf.String()
+	if !strings.Contains(out, "\x1b[0J") {
+		t.Errorf("the live block must be cleared to end of screen, not row by row: %q", out)
+	}
+	if !strings.Contains(out, long) {
+		t.Errorf("the final message was truncated:\n%s", out)
+	}
+	if strings.Contains(out, "\x1b[2K") {
+		t.Errorf("row by row clearing cannot cope with a wrapped line: %q", out)
+	}
+	if r.lines != 0 {
+		t.Errorf("lines = %d, want the renderer to stop tracking a block it will not redraw", r.lines)
 	}
 }

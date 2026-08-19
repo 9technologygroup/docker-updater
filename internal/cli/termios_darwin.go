@@ -22,3 +22,11 @@ func echoOff(s termState) termState {
 	s.Lflag &^= unix.ECHO
 	return s
 }
+
+func terminalWidth(fd int) int {
+	ws, err := unix.IoctlGetWinsize(fd, unix.TIOCGWINSZ)
+	if err != nil || ws.Col == 0 {
+		return 0
+	}
+	return int(ws.Col)
+}

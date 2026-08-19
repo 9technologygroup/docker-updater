@@ -12,7 +12,8 @@ import (
 )
 
 const (
-	liveWidth     = 78
+	fallbackWidth = 78
+	minWidth      = 40
 	stepNameCol   = 24
 	stepMarkCol   = 6
 	scanResultCol = 16
@@ -61,8 +62,12 @@ func (r *jobRenderer) update(snap job.Snapshot) {
 
 func (r *jobRenderer) finish(snap job.Snapshot) {
 	if r.tty {
-		r.draw(append(jobSummaryLines(snap, false), jobStepLines(snap, time.Now(), false)...))
-		r.lines = 0
+		// Printed rather than drawn: the final block is unclipped so a long
+		// message survives whole, and nothing is redrawn over it afterwards.
+		r.erase()
+		for _, l := range append(jobSummaryLines(snap, false), jobStepLines(snap, time.Now(), false)...) {
+			_, _ = fmt.Fprintln(r.w, l)
+		}
 		return
 	}
 	r.begin(snap)
@@ -96,20 +101,21 @@ func (r *jobRenderer) emitSteps(snap job.Snapshot) {
 }
 
 func (r *jobRenderer) draw(lines []string) {
-	if r.lines > 0 {
-		_, _ = fmt.Fprintf(r.w, "\x1b[%dA", r.lines)
-	}
+	r.erase()
 	for _, l := range lines {
-		_, _ = fmt.Fprintf(r.w, "\r\x1b[2K%s\n", l)
-	}
-	extra := r.lines - len(lines)
-	for range extra {
-		_, _ = fmt.Fprint(r.w, "\r\x1b[2K\n")
-	}
-	if extra > 0 {
-		_, _ = fmt.Fprintf(r.w, "\x1b[%dA", extra)
+		_, _ = fmt.Fprintf(r.w, "%s\n", l)
 	}
 	r.lines = len(lines)
+}
+
+// erase clears the whole previous block rather than one row per logical line,
+// so anything that did wrap is still removed.
+func (r *jobRenderer) erase() {
+	if r.lines == 0 {
+		return
+	}
+	_, _ = fmt.Fprintf(r.w, "\x1b[%dA\r\x1b[0J", r.lines)
+	r.lines = 0
 }
 
 func jobSummaryLines(snap job.Snapshot, live bool) []string {
@@ -228,16 +234,26 @@ func stepDetail(s job.Step) []string {
 	return lines
 }
 
+// liveWidth keeps a redrawn line inside one screen row. The cursor maths counts
+// logical lines, so a line that wraps desynchronises every frame after it.
+func liveWidth() int {
+	if w := terminalWidth(int(os.Stdout.Fd())); w >= minWidth {
+		return w - 1
+	}
+	return fallbackWidth
+}
+
 // fitLines keeps a redrawn block one screen line per logical line. The cursor
 // maths counts logical lines, so an embedded newline or a wrap desynchronises it.
 func fitLines(lines []string, live bool) []string {
+	width := liveWidth()
 	if !live {
 		return lines
 	}
 	out := make([]string, len(lines))
 	for i, l := range lines {
 		l = strings.ReplaceAll(l, "\n", " ")
-		out[i] = clip(strings.ReplaceAll(l, "\t", " "), liveWidth)
+		out[i] = clip(strings.ReplaceAll(l, "\t", " "), width)
 	}
 	return out
 }
