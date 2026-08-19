@@ -42,12 +42,22 @@ type Pending struct {
 
 func (p Pending) ReadyAt(soak time.Duration) time.Time { return p.Since.Add(soak) }
 
+// Announcer receives what a scheduled check learned. Kept narrow so the
+// scheduler does not depend on how a notification is shaped or sent.
+type Announcer interface {
+	Available(ctx context.Context, target string, services []string, appliesAt time.Time)
+	Withdrawn(ctx context.Context, target, reason string)
+	CheckFailed(ctx context.Context, target string, cause error)
+	CheckRecovered(ctx context.Context, target string)
+}
+
 type Scheduler struct {
-	cfg     *config.Config
-	checker Checker
-	starter Starter
-	busy    BusyReporter
-	log     *slog.Logger
+	cfg      *config.Config
+	checker  Checker
+	starter  Starter
+	busy     BusyReporter
+	announce Announcer
+	log      *slog.Logger
 
 	// jitter spreads the first check across hosts. A field rather than a
 	// constant so tests can exercise the loop without waiting it out.
@@ -57,6 +67,28 @@ type Scheduler struct {
 	pending   map[string]Pending
 	nextCheck map[string]time.Time
 	lastCheck map[string]time.Time
+	// broken tracks which targets are currently failing their check, so the
+	// transition is announced rather than every check while it stays broken.
+	broken map[string]bool
+}
+
+// WithAnnouncer wires notifications for what the scheduler learns. Without one
+// the scheduler behaves exactly as before.
+func (s *Scheduler) WithAnnouncer(a Announcer) *Scheduler {
+	s.announce = a
+	return s
+}
+
+func (s *Scheduler) markBroken(target string, failing bool) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	was := s.broken[target]
+	if failing {
+		s.broken[target] = true
+	} else {
+		delete(s.broken, target)
+	}
+	return was != failing
 }
 
 func New(cfg *config.Config, checker Checker, starter Starter, log *slog.Logger) *Scheduler {
@@ -67,6 +99,7 @@ func New(cfg *config.Config, checker Checker, starter Starter, log *slog.Logger)
 		log:       log,
 		jitter:    startupJitter,
 		pending:   make(map[string]Pending),
+		broken:    make(map[string]bool),
 		nextCheck: make(map[string]time.Time),
 		lastCheck: make(map[string]time.Time),
 	}
@@ -220,12 +253,21 @@ func (s *Scheduler) tick(ctx context.Context, t *config.Target) {
 			return
 		}
 		s.log.Error("auto update check failed", "target", t.Name, "error", err)
+		if s.announce != nil && s.markBroken(t.Name, true) {
+			s.announce.CheckFailed(ctx, t.Name, err)
+		}
 		return
+	}
+	if s.announce != nil && s.markBroken(t.Name, false) {
+		s.announce.CheckRecovered(ctx, t.Name)
 	}
 
 	if !result.Available {
 		if s.clear(t.Name) {
 			s.log.Info("auto update no longer pending", "target", t.Name, "reason", result.Message)
+			if s.announce != nil {
+				s.announce.Withdrawn(ctx, t.Name, result.Message)
+			}
 		}
 		return
 	}
@@ -237,6 +279,9 @@ func (s *Scheduler) tick(ctx context.Context, t *config.Target) {
 		s.log.Info("auto update pending",
 			"target", t.Name, "changed", result.Changed,
 			"soak", t.SoakWindow().String(), "applies_at", ready.UTC().Format(time.RFC3339))
+		if s.announce != nil {
+			s.announce.Available(ctx, t.Name, result.Changed, ready)
+		}
 		if t.SoakWindow() > 0 {
 			return
 		}

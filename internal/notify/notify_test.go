@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -214,5 +216,148 @@ func TestEachPlatformGetsItsDocumentedBody(t *testing.T) {
 		if !c.only && p["state"] != "succeeded" {
 			t.Errorf("%s: the full payload must survive alongside text: %s", c.format, *got)
 		}
+	}
+}
+
+func TestEventDefaultsKeepTodaysOutcomesAndAddTheFailures(t *testing.T) {
+	var n config.Notify
+	on := []string{
+		config.EventUpdateSucceeded, config.EventUpdateNoChange, config.EventUpdateDryRun,
+		config.EventUpdateFailed, config.EventUpdateRolledBack, config.EventUpdateRollbackFailed,
+		config.EventCheckFailed, config.EventCheckRecovered,
+	}
+	off := []string{config.EventUpdateAvailable, config.EventUpdateWithdrawn, config.EventUpdateStarted}
+	for _, e := range on {
+		if !n.Wants(e) {
+			t.Errorf("%s should be on by default", e)
+		}
+	}
+	for _, e := range off {
+		if n.Wants(e) {
+			t.Errorf("%s should be off by default", e)
+		}
+	}
+}
+
+// Naming one event must not silence the rest, or a config that turns on
+// update_available would quietly stop reporting failures.
+func TestNamingOneEventLeavesTheOthersAtTheirDefault(t *testing.T) {
+	n := config.Notify{Events: map[string]bool{config.EventUpdateAvailable: true}}
+	if !n.Wants(config.EventUpdateAvailable) {
+		t.Error("the named event should be on")
+	}
+	if !n.Wants(config.EventUpdateFailed) {
+		t.Error("an unnamed event should keep its default")
+	}
+}
+
+func TestAnUnsubscribedOutcomeIsNotSent(t *testing.T) {
+	srv, got, _ := recorder(t, 200, "")
+	n := New(config.Notify{URL: srv.URL, Timeout: 5 * time.Second,
+		Events: map[string]bool{config.EventUpdateSucceeded: false}}, "web01", quietLog())
+
+	n.Notify(context.Background(), snap())
+	if len(*got) != 0 {
+		t.Errorf("a muted outcome was still posted: %s", *got)
+	}
+}
+
+func TestEveryPayloadNamesItsEvent(t *testing.T) {
+	cases := []struct {
+		name string
+		call func(*Notifier)
+		want string
+	}{
+		{"finished", func(n *Notifier) { n.Notify(context.Background(), snap()) }, config.EventUpdateSucceeded},
+		{"started", func(n *Notifier) { n.NotifyStarted(context.Background(), snap()) }, config.EventUpdateStarted},
+		{"available", func(n *Notifier) {
+			n.Available(context.Background(), "app", []string{"web"}, time.Now().Add(30*time.Minute))
+		}, config.EventUpdateAvailable},
+		{"withdrawn", func(n *Notifier) { n.Withdrawn(context.Background(), "app", "gone") }, config.EventUpdateWithdrawn},
+		{"check failed", func(n *Notifier) {
+			n.CheckFailed(context.Background(), "app", errors.New("401 Unauthorized\nsecond line"))
+		}, config.EventCheckFailed},
+		{"check recovered", func(n *Notifier) { n.CheckRecovered(context.Background(), "app") }, config.EventCheckRecovered},
+	}
+	for _, c := range cases {
+		srv, got, _ := recorder(t, 200, "")
+		n := New(config.Notify{URL: srv.URL, Timeout: 5 * time.Second, Events: map[string]bool{
+			config.EventUpdateStarted: true, config.EventUpdateAvailable: true, config.EventUpdateWithdrawn: true,
+		}}, "web01", quietLog())
+
+		c.call(n)
+		var p map[string]any
+		if err := json.Unmarshal(*got, &p); err != nil {
+			t.Fatalf("%s: %v (body %q)", c.name, err, *got)
+		}
+		if p["event"] != c.want {
+			t.Errorf("%s: event = %v, want %q", c.name, p["event"], c.want)
+		}
+		if s, _ := p["summary"].(string); s == "" {
+			t.Errorf("%s: no summary, so a chat platform would post an empty message", c.name)
+		}
+		if strings.Contains(fmt.Sprint(p["summary"]), "\n") {
+			t.Errorf("%s: summary spans lines: %q", c.name, p["summary"])
+		}
+	}
+}
+
+func TestAvailableCarriesWhenItWillApply(t *testing.T) {
+	srv, got, _ := recorder(t, 200, "")
+	n := New(config.Notify{URL: srv.URL, Timeout: 5 * time.Second,
+		Events: map[string]bool{config.EventUpdateAvailable: true}}, "web01", quietLog())
+
+	at := time.Now().Add(30 * time.Minute)
+	n.Available(context.Background(), "app", []string{"web", "db"}, at)
+
+	var p map[string]any
+	if err := json.Unmarshal(*got, &p); err != nil {
+		t.Fatal(err)
+	}
+	if p["applies_at"] == nil {
+		t.Errorf("no applies_at, which is the only actionable part: %s", *got)
+	}
+	if svc, _ := p["changed_services"].([]any); len(svc) != 2 {
+		t.Errorf("changed_services = %v, want both", p["changed_services"])
+	}
+}
+
+// A non-job event has no job, so it must not carry empty job fields that a
+// receiver would have to know to ignore.
+func TestANonJobEventOmitsTheJobFields(t *testing.T) {
+	srv, got, _ := recorder(t, 200, "")
+	n := New(config.Notify{URL: srv.URL, Timeout: 5 * time.Second,
+		Events: map[string]bool{config.EventUpdateAvailable: true}}, "web01", quietLog())
+
+	n.Available(context.Background(), "app", []string{"web"}, time.Now().Add(time.Hour))
+
+	var p map[string]any
+	if err := json.Unmarshal(*got, &p); err != nil {
+		t.Fatal(err)
+	}
+	for _, absent := range []string{"state", "job_id", "duration_ms"} {
+		if _, ok := p[absent]; ok {
+			t.Errorf("%q should be omitted for a non-job event: %s", absent, *got)
+		}
+	}
+	for _, present := range []string{"event", "target", "summary", "applies_at"} {
+		if _, ok := p[present]; !ok {
+			t.Errorf("%q is missing: %s", present, *got)
+		}
+	}
+}
+
+func TestAJobEventStillCarriesStateAndID(t *testing.T) {
+	srv, got, _ := recorder(t, 200, "")
+	n := New(config.Notify{URL: srv.URL, Timeout: 5 * time.Second}, "web01", quietLog())
+
+	n.Notify(context.Background(), snap())
+
+	var p map[string]any
+	if err := json.Unmarshal(*got, &p); err != nil {
+		t.Fatal(err)
+	}
+	if p["state"] != "succeeded" || p["job_id"] != "abc123" {
+		t.Errorf("a finished job must keep state and job_id: %s", *got)
 	}
 }

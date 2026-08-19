@@ -102,6 +102,19 @@ func printNotifyConfig(w io.Writer, cfg *config.Config, n *notify.Notifier) {
 	}
 	_, _ = fmt.Fprintf(w, "timeout  %s\n", cfg.Notify.Timeout)
 
+	var on, off []string
+	for _, e := range config.KnownEvents() {
+		if cfg.Notify.Wants(e) {
+			on = append(on, e)
+		} else {
+			off = append(off, e)
+		}
+	}
+	_, _ = fmt.Fprintf(w, "events   %s\n", strings.Join(on, ", "))
+	if len(off) > 0 {
+		_, _ = fmt.Fprintf(w, "  muted  %s\n", strings.Join(off, ", "))
+	}
+
 	if len(cfg.Notify.Headers) == 0 {
 		_, _ = fmt.Fprintf(w, "headers  none\n")
 		return

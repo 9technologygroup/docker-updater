@@ -2,6 +2,7 @@ package schedule
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"os"
@@ -362,4 +363,108 @@ func TestClearPendingDropsASoakSomebodyElseApplied(t *testing.T) {
 	// Clearing something already gone must not panic or log noise.
 	s.ClearPending("web")
 	s.ClearPending("never-existed")
+}
+
+type recordingAnnouncer struct {
+	mu     sync.Mutex
+	events []string
+}
+
+func (r *recordingAnnouncer) add(s string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.events = append(r.events, s)
+}
+
+func (r *recordingAnnouncer) seen() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.events...)
+}
+
+func (r *recordingAnnouncer) Available(_ context.Context, target string, _ []string, _ time.Time) {
+	r.add("available:" + target)
+}
+func (r *recordingAnnouncer) Withdrawn(_ context.Context, target, _ string) {
+	r.add("withdrawn:" + target)
+}
+func (r *recordingAnnouncer) CheckFailed(_ context.Context, target string, _ error) {
+	r.add("failed:" + target)
+}
+func (r *recordingAnnouncer) CheckRecovered(_ context.Context, target string) {
+	r.add("recovered:" + target)
+}
+
+func (f *fakeChecker) fail(err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.err = err
+}
+
+// A stack that stays broken must announce once, not every check_interval.
+// Repeated identical alerts are how people learn to ignore alerts.
+func TestCheckFailuresAnnounceOnTheTransitionOnly(t *testing.T) {
+	checker := &fakeChecker{err: errors.New("401 Unauthorized")}
+	rec := &recordingAnnouncer{}
+	s, target := newScheduler(t, time.Hour, checker, &fakeStarter{})
+	s = s.WithAnnouncer(rec)
+
+	ctx := context.Background()
+	s.tick(ctx, target)
+	s.tick(ctx, target)
+	s.tick(ctx, target)
+	if got := rec.seen(); len(got) != 1 || got[0] != "failed:web" {
+		t.Fatalf("events = %v, want exactly one failure announcement for three failed checks", got)
+	}
+
+	checker.fail(nil)
+	checker.set(wire.CheckResult{Available: false, Message: "current"})
+	s.tick(ctx, target)
+	s.tick(ctx, target)
+	if got := rec.seen(); len(got) != 2 || got[1] != "recovered:web" {
+		t.Fatalf("events = %v, want one recovery once it works again", got)
+	}
+
+	checker.fail(errors.New("401 Unauthorized"))
+	s.tick(ctx, target)
+	if got := rec.seen(); len(got) != 3 || got[2] != "failed:web" {
+		t.Fatalf("events = %v, want it to announce again after having recovered", got)
+	}
+}
+
+func TestANewImageIsAnnouncedOnceWhileItSoaks(t *testing.T) {
+	checker := &fakeChecker{result: wire.CheckResult{
+		Available: true, Changed: []string{"web"}, Message: "new image for web",
+	}}
+	rec := &recordingAnnouncer{}
+	s, target := newScheduler(t, time.Hour, checker, &fakeStarter{})
+	s = s.WithAnnouncer(rec)
+
+	s.tick(context.Background(), target)
+	s.tick(context.Background(), target)
+	if got := rec.seen(); len(got) != 1 || got[0] != "available:web" {
+		t.Fatalf("events = %v, want one announcement for one new image", got)
+	}
+}
+
+func TestAWithdrawnImageIsAnnounced(t *testing.T) {
+	checker := &fakeChecker{result: wire.CheckResult{Available: true, Changed: []string{"web"}}}
+	rec := &recordingAnnouncer{}
+	s, target := newScheduler(t, time.Hour, checker, &fakeStarter{})
+	s = s.WithAnnouncer(rec)
+
+	s.tick(context.Background(), target)
+	checker.set(wire.CheckResult{Available: false, Message: "pulled"})
+	s.tick(context.Background(), target)
+
+	if got := rec.seen(); len(got) != 2 || got[1] != "withdrawn:web" {
+		t.Fatalf("events = %v, want the soak abandonment announced", got)
+	}
+}
+
+// Without one the scheduler must behave exactly as it did before.
+func TestNoAnnouncerIsSafe(t *testing.T) {
+	checker := &fakeChecker{err: errors.New("boom")}
+	s, target := newScheduler(t, time.Hour, checker, &fakeStarter{})
+	s.tick(context.Background(), target)
 }

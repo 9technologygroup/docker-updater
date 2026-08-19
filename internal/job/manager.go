@@ -10,6 +10,7 @@ import (
 
 type Notifier interface {
 	Notify(ctx context.Context, snap Snapshot)
+	NotifyStarted(ctx context.Context, snap Snapshot)
 }
 
 // Recorder persists a finished job. The in-memory store is bounded and dies with
@@ -60,6 +61,14 @@ func (m *Manager) Start(t *config.Target, req Request) (*Job, error) {
 	j, err := m.store.Begin(t.Name, req)
 	if err != nil {
 		return j, err
+	}
+	if m.notifier != nil {
+		snap := j.Snapshot()
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+			defer cancel()
+			m.notifier.NotifyStarted(ctx, snap)
+		}()
 	}
 	go m.run(t, j, req)
 	return j, nil
