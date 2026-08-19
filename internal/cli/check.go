@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/9technologygroup/docker-updater/internal/agent"
@@ -88,7 +89,22 @@ func printWarnings(cfg *config.Config) {
 	for _, w := range warnings {
 		fmt.Printf("  %s\n", w)
 	}
-	fmt.Printf("\ndup will start, and updates for those stacks will fail until the path is there.\n")
+	// The footer used to assume every warning was a missing directory, which
+	// read as nonsense once anything else could warn.
+	missing := 0
+	for _, w := range warnings {
+		if strings.Contains(w, "does not exist") {
+			missing++
+		}
+	}
+	switch {
+	case missing == len(warnings):
+		fmt.Printf("\ndup will start, and updates for those stacks will fail until the path is there.\n")
+	case missing > 0:
+		fmt.Printf("\ndup will start. Updates for a stack whose directory is missing will fail until it is there.\n")
+	default:
+		fmt.Printf("\ndup will start. None of the above stops it.\n")
+	}
 }
 
 // printDockerConfigStatus is informational only: it never fails the check, since

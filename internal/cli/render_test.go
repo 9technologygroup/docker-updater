@@ -169,8 +169,11 @@ func TestTTYRendererRedrawsOneBlockInPlace(t *testing.T) {
 	if !strings.HasPrefix(second, "\x1b[3A") {
 		t.Errorf("the redraw did not move up over the 3 lines it drew before: %q", second)
 	}
-	if strings.Count(second, "\x1b[2K") != 4 {
-		t.Errorf("the redraw cleared %d lines, want 4: %q", strings.Count(second, "\x1b[2K"), second)
+	if !strings.Contains(second, "\x1b[0J") {
+		t.Errorf("the redraw did not clear the old block to end of screen: %q", second)
+	}
+	if r.lines != 4 {
+		t.Errorf("tracked %d lines after the redraw, want 4", r.lines)
 	}
 
 	buf.Reset()
@@ -198,8 +201,8 @@ func TestLiveLinesAreFoldedToOneScreenLineEach(t *testing.T) {
 		if strings.ContainsAny(l, "\n\t") {
 			t.Errorf("live line still contains a newline or tab: %q", l)
 		}
-		if len(l) > liveWidth {
-			t.Errorf("live line is %d chars, want at most %d: %q", len(l), liveWidth, l)
+		if w := liveWidth(); len(l) > w {
+			t.Errorf("live line is %d chars, want at most %d: %q", len(l), w, l)
 		}
 	}
 	if got := jobStepLines(snap, time.Now(), false); !strings.Contains(got[1], "\n") {
@@ -232,7 +235,7 @@ func TestClassifyScan(t *testing.T) {
 		wantResult  string
 	}{
 		{"up to date", scanResult{Message: "app is current"}, nil, scanUpToDate, "up to date"},
-		{"available", scanResult{Available: true, Changed: []string{"app"}}, nil, scanAvailable, "update available"},
+		{"available", scanResult{Available: true, Changed: []string{"app"}, Message: "new image for app"}, nil, scanAvailable, "update available"},
 		{"busy on 409", scanResult{}, &apiStatusError{status: http.StatusConflict}, scanBusy, "busy"},
 		{"busy on 503", scanResult{}, &apiStatusError{status: http.StatusServiceUnavailable}, scanBusy, "busy"},
 		{"failed on 500", scanResult{}, &apiStatusError{status: http.StatusInternalServerError}, scanFailed, "check FAILED"},
@@ -240,15 +243,17 @@ func TestClassifyScan(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			outcome, result, services, _ := classifyScan(c.out, c.err)
+			outcome, result, detail := classifyScan(c.out, c.err)
 			if outcome != c.wantOutcome {
 				t.Errorf("outcome = %d, want %d", outcome, c.wantOutcome)
 			}
 			if result != c.wantResult {
 				t.Errorf("result = %q, want %q", result, c.wantResult)
 			}
-			if c.wantOutcome == scanAvailable && services != "app" {
-				t.Errorf("services = %q, want the changed service", services)
+			// The detail carries the changed services, which is why there is
+			// no separate column for them.
+			if c.wantOutcome == scanAvailable && !strings.Contains(detail, "app") {
+				t.Errorf("detail = %q, want it to name the changed service", detail)
 			}
 		})
 	}
@@ -260,15 +265,15 @@ func TestScanTableNonTTYPrintsOneRowPerTarget(t *testing.T) {
 	table.header()
 
 	table.checking("quackback")
-	table.result("quackback", "update available", "app", "app: new image")
+	table.result("quackback", "update available", "new image for app")
 	table.checking("web")
-	table.result("web", "up to date", "-", "")
+	table.result("web", "up to date", "already running the latest images")
 
 	got := lines(buf.String())
 	want := []string{
-		"STACK      RESULT            SERVICES                  DETAIL",
-		"quackback  update available  app                       app: new image",
-		"web        up to date        -",
+		"STACK      RESULT            DETAIL",
+		"quackback  update available  new image for app",
+		"web        up to date        already running the latest images",
 	}
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Errorf("got:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
@@ -291,11 +296,82 @@ func TestScanTableTTYRewritesThePlaceholderRow(t *testing.T) {
 	}
 
 	buf.Reset()
-	table.result("quackback", "up to date", "-", "")
+	table.result("quackback", "up to date", "already running the latest images")
 	if !strings.HasPrefix(buf.String(), "\x1b[1A\r\x1b[2K") {
 		t.Errorf("the result did not overwrite the placeholder row: %q", buf.String())
 	}
 	if strings.Contains(buf.String(), "checking") {
 		t.Errorf("the placeholder survived into the final row: %q", buf.String())
+	}
+}
+
+func TestRunningStepNamesTheServicesItIsWaitingOn(t *testing.T) {
+	now := time.Now()
+	snap := job.Snapshot{
+		Target: "patchmon", State: job.StateRunning,
+		Steps: []job.Step{
+			{Name: "up", OK: true, DurationMS: 6900},
+			{Name: "health", Running: true, StartedAt: now.Add(-17 * time.Second)},
+		},
+		Progress: []job.ServiceState{
+			{Service: "database", State: "running", Health: "healthy"},
+			{Service: "server", State: "running", Health: "starting"},
+		},
+	}
+
+	got := strings.Join(jobStepLines(snap, now, true), "\n")
+	for _, want := range []string{"database", "healthy", "server", "starting"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the live frame does not mention %q:\n%s", want, got)
+		}
+	}
+	if i, j := strings.Index(got, "health "), strings.Index(got, "database"); i > j {
+		t.Errorf("services must be listed under the step they belong to:\n%s", got)
+	}
+
+	// A completed step has nothing in flight, so it must not carry the list.
+	snap.Steps[1].Running = false
+	snap.Steps[1].OK = true
+	snap.Progress = nil
+	if out := strings.Join(jobStepLines(snap, now, true), "\n"); strings.Contains(out, "database") {
+		t.Errorf("a finished step should not list services:\n%s", out)
+	}
+}
+
+func TestProgressLinesSayWhenThereIsNoHealthcheck(t *testing.T) {
+	got := strings.Join(progressLines([]job.ServiceState{{Service: "web", State: "running"}}), "\n")
+	if !strings.Contains(got, "no healthcheck") {
+		t.Errorf("an empty health field must say so rather than render blank: %q", got)
+	}
+}
+
+// A wrapped line occupies more than one screen row, so clearing one row per
+// logical line left the previous frame showing through the final block.
+func TestFinalBlockDoesNotRedrawOverTheLiveOne(t *testing.T) {
+	var buf bytes.Buffer
+	r := newJobRenderer(&buf, true)
+
+	r.update(snapshot(job.StateRunning, job.Step{Name: "validate", OK: true, DurationMS: 83}))
+	buf.Reset()
+
+	long := "dry run: nothing to do, the whole stack in /opt/patchmon/npmplus is already on the " +
+		"latest images (1 container(s) running). Images were pulled so the comparison is real; " +
+		"nothing was recreated"
+	final := snapshot(job.StateDryRun, job.Step{Name: "validate", OK: true, DurationMS: 83})
+	final.Message = long
+	r.finish(final)
+
+	out := buf.String()
+	if !strings.Contains(out, "\x1b[0J") {
+		t.Errorf("the live block must be cleared to end of screen, not row by row: %q", out)
+	}
+	if !strings.Contains(out, long) {
+		t.Errorf("the final message was truncated:\n%s", out)
+	}
+	if strings.Contains(out, "\x1b[2K") {
+		t.Errorf("row by row clearing cannot cope with a wrapped line: %q", out)
+	}
+	if r.lines != 0 {
+		t.Errorf("lines = %d, want the renderer to stop tracking a block it will not redraw", r.lines)
 	}
 }

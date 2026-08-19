@@ -88,11 +88,12 @@ func (e *Pipeline) Images(ctx context.Context, t *config.Target) (wire.ImagesRes
 
 type discardSink struct{}
 
-func (discardSink) StartStep(string)             {}
-func (discardSink) AddStep(job.Step)             {}
-func (discardSink) SetBefore([]job.ServiceState) {}
-func (discardSink) SetAfter([]job.ServiceState)  {}
-func (discardSink) SetChanged([]string)          {}
+func (discardSink) StartStep(string)               {}
+func (discardSink) SetProgress([]job.ServiceState) {}
+func (discardSink) AddStep(job.Step)               {}
+func (discardSink) SetBefore([]job.ServiceState)   {}
+func (discardSink) SetAfter([]job.ServiceState)    {}
+func (discardSink) SetChanged([]string)            {}
 
 func (e *Pipeline) pipeline(ctx context.Context, t *config.Target, sink job.Sink, req job.Request) (job.State, string) {
 	env := targetEnv(t, req.Tag)
@@ -300,6 +301,7 @@ func (e *Pipeline) waitHealthy(ctx context.Context, t *config.Target, sink job.S
 		containers, res := e.docker.Containers(ctx, t, env)
 		if res.Err == nil {
 			last = containers
+			sink.SetProgress(toServiceStates(watchedOnly(containers, healthServices)))
 			if ok, _ := settled(containers, healthServices); ok {
 				if settledSince.IsZero() {
 					settledSince = time.Now()
@@ -483,6 +485,21 @@ func begin(sink job.Sink, name string) func(error, string) {
 		}
 		sink.AddStep(step)
 	}
+}
+
+// watchedOnly narrows a poll to the services the health check is actually
+// waiting on, so the caller is not shown sidecars it will never block for.
+func watchedOnly(containers []compose.Container, healthServices []string) []compose.Container {
+	if len(healthServices) == 0 {
+		return containers
+	}
+	out := make([]compose.Container, 0, len(containers))
+	for _, c := range containers {
+		if slices.Contains(healthServices, c.Service) {
+			out = append(out, c)
+		}
+	}
+	return out
 }
 
 func wanted(t *config.Target, service string) bool {

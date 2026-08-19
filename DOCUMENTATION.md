@@ -188,6 +188,7 @@ do the same thing. `dup <command> -h` prints that command's flags and exits 0.
 | `dup check` | Validate the config, warn if the running agent has a different one, and report which stacks have registry credentials of their own |
 | `dup audit` | Prove the service account cannot rewrite what runs as root |
 | `dup cert` | Generate the self-signed TLS certificate. Root only |
+| `dup notify` | Send a test notification to the outbound webhook and show exactly what came back |
 | `dup auth [stack]` | Store a stack's own registry credentials. Root only |
 | `dup version` | Version, commit, and whether a newer release is out |
 | `dup serve` | The unprivileged HTTP API. systemd runs this |
@@ -211,6 +212,7 @@ waiting to apply, and what is quietly drifting outside it".
 | `logs` | `--full` | `false` | Show every step of each job, not just the summary |
 | `scan` | `--timeout` | `15m` | Budget for the whole scan across every stack |
 | `list` | `--all` | `false` | Also list compose projects dup already covers |
+| `notify` | `--quiet` | `false` | Print one line and the exit code only, for cron or a health check |
 | `cert` | `--force` | `false` | Replace an existing certificate |
 | `cert` | `--defaults` | `false` | Generate at the default paths without reading a config, which is what the installer uses on a fresh host |
 | `auth` | `--list` | `false` | List what is stored: stack, registry host, username and when that stack's store was last written. Never the secret |
@@ -317,6 +319,7 @@ over both forms.
 | Key | Default | Meaning |
 |---|---|---|
 | `url` | empty, disabled | Where to POST the result of every finished job. `http` or `https` only |
+| `format` | `auto` | Which body to POST. `auto` reads the destination off the URL and is almost always right. See [Chat platforms](#chat-platforms) for the full list |
 | `timeout` | `15s` | How long to wait for it |
 | `headers` | none | Extra headers, for an auth token on the receiving end |
 
@@ -499,11 +502,21 @@ and **verifies the pair against the registry before writing anything**:
 ```
 $ sudo dup auth patchmon
 patchmon
-  registry.example.com
-    username: robot$dup
+  cr.example.com
+    username (blank if this registry needs no login): robot$dup
     password:
     saved
+  ghcr.io
+    username (blank if this registry needs no login):
+    left alone, dup will pull from it anonymously
+
+stored 1, left 1 alone
 ```
+
+A stack often pulls from more than one registry, and usually only one of them needs a
+login. Press enter past the public ones. Leaving a registry alone is a choice rather than
+a failure, so it does not affect the exit code; only a registry that refused the
+credentials, or one dup could not reach to ask, does.
 
 A wrong password is rejected at the prompt and nothing is stored. A registry that could not
 be reached is reported differently, and again nothing is stored, because "we could not ask"
@@ -516,7 +529,7 @@ Worth knowing before you build anything around it:
 - Adding a credential needs a real terminal. With stdin redirected it refuses rather than
   reading a password from a pipe. `--list` and `--remove` do not prompt, so they are fine in
   a script, as long as it runs as root.
-- A registry that already has credentials stored is skipped. `--force` re-enters them.
+- A registry that already has credentials stored is left alone. `--force` re-enters them.
 - Verification is HTTPS only. dup will not follow a redirect onto another host, and will not
   use a token endpoint served over plain HTTP, so nothing a registry answers can walk your
   password somewhere else.
@@ -974,9 +987,82 @@ When `notify.url` is set, every finished job POSTs a summary there:
 }
 ```
 
-`ok` is there so n8n can branch without parsing prose, and `summary` is ready to post straight to Discord. `trigger` is `api`, `github` or `auto`.
+`ok` is there so n8n can branch without parsing prose. `trigger` is `api`, `github` or `auto`.
 
----
+### Testing it without running an update
+
+```bash
+sudo dup notify
+```
+
+That posts a synthetic job to `notify.url` and prints the request, the status, the round
+trip time and the response body. Nothing Docker related happens and no stack is touched.
+The payload carries `"test": true` so the receiving end can tell it apart from a real
+update. `--quiet` reduces it to one line and an exit code, for cron.
+
+The response body is the point. A webhook that refuses a payload says why in its body, and
+that is the part you cannot see anywhere else.
+
+### Chat platforms
+
+You should not have to configure this. `notify.format` defaults to `auto`, which reads the
+destination off the URL and sends the body that platform's own documentation asks for:
+
+| URL host | Format | Body sent |
+|---|---|---|
+| `discord.com`, `discordapp.com` | `discord` | `{"content": "<summary>"}` |
+| `hooks.slack.com` | `slack` | `{"text": "<summary>"}` |
+| `chat.googleapis.com` | `google-chat` | `{"text": "<summary>"}` |
+| anything else | `dup` | The full JSON above, with `text` added |
+
+Paste a Discord or Slack webhook URL into `notify.url` and it works. Nothing else to set.
+
+**Why not one body that suits everything.** The obvious answer is to send `content` and
+`text` together and let each platform read the field it knows. That only works if the others
+are ignored, and **not one of these vendors documents what it does with a field it does not
+recognise**. It very probably works today. It would fail silently the day one of them
+tightens validation, and a notification that silently stops arriving is the worst kind. So
+each recognised platform gets exactly what its own docs specify instead.
+
+**The fallback carries `text` as well.** For any host dup does not recognise, the full
+payload is sent with a `text` field holding the same sentence as `summary`. n8n, Zapier and
+anything reading the existing fields are unaffected, and a self-hosted Mattermost, whose
+incoming webhooks take `{"text": "..."}`, renders it without configuration.
+
+Rocket.Chat is not in that group. Its incoming webhooks use their own payload and its
+documentation makes no claim of accepting Slack's, so a translation script on the
+Rocket.Chat side is what people use. Point `notify.url` at n8n instead if you want a
+one-liner.
+
+**Microsoft Teams needs the format setting.** Teams is the one platform detection cannot
+help with. The old Office 365 connector webhooks, which took a simple JSON body, were
+disabled in May 2026. The replacement runs on Power Automate, where the schema is whatever
+the operator wired into the flow rather than a contract Microsoft publishes, and the URL
+that gets issued does not identify itself reliably. If your flow was built from the standard
+template it expects `text`, so:
+
+```yaml
+notify:
+  url: "https://…"
+  format: teams
+```
+
+Teams also throttles above four requests a second and caps a message at 28 KB. Google Chat
+is tighter still, at one request a second per space, shared by every webhook posting into
+it. Neither matters for one post per finished update unless a lot of stacks finish in the
+same second.
+
+**Overriding detection** is what the other values are for: `dup`, `discord`, `slack`,
+`teams`, `google-chat`. Reach for one when the endpoint is behind a proxy or on a custom
+domain, which is exactly where reading the hostname cannot tell you anything.
+
+Whatever you set, check it:
+
+```bash
+sudo dup notify
+```
+
+It prints which format was used and whether that was detected or configured.
 
 ## Operating it
 
@@ -1041,6 +1127,25 @@ quackback  running
     pull                     ...    2.8s
 ```
 
+While a step is waiting on containers, the services it is watching are listed under it with
+their state and health. A health check can sit there for minutes, and this is what says
+which service is holding it up rather than leaving you to guess:
+
+```
+patchmon  running
+  changed: database, server
+  job 35a0e4071379c34b in 26.601s
+    up                       ok     6.9s
+    health                   ...    17.4s
+      database  running    healthy
+      server    running    starting
+```
+
+Only the services the health check is actually waiting on are listed, so a sidecar you had
+deliberately stopped does not clutter it. A service with no `HEALTHCHECK` shows as
+`no healthcheck`, which is a standing reminder that `stability_window` is the only signal
+you have for it.
+
 Piped or redirected there is no ANSI at all, and no redrawing. Each step is printed once, on
 its own line, as it completes, which is what makes it readable in a log or in CI:
 
@@ -1082,10 +1187,14 @@ holding the whole table until the end. On a terminal the stack being checked sho
 `checking...` and is rewritten in place when its answer arrives:
 
 ```
-STACK      RESULT            SERVICES                  DETAIL
-quackback  update available  app                       app: new image
-web        up to date        -
+STACK      RESULT            DETAIL
+quackback  update available  new image for app
+web        up to date        already running the latest images
 ```
+
+There is no separate services column. The services that changed are named in the
+detail, so a column for them only repeated it and pushed the detail off a narrow
+terminal.
 
 ### Seeing what is going on
 

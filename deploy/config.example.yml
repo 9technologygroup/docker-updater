@@ -58,6 +58,10 @@ defaults:
   job_timeout: 25m
   rollback: true
 
+# The format defaults to auto, which reads the destination off the url and
+# sends what that platform documents: content for discord, text for slack and
+# google chat, the full payload plus text for anything else. Set it explicitly
+# only for teams, or for an endpoint behind a proxy or on a custom domain.
 notify:
   url: ""
   timeout: 15s

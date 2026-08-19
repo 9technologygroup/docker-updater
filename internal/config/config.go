@@ -140,6 +140,7 @@ type Defaults struct {
 
 type Notify struct {
 	URL     string            `yaml:"url"`
+	Format  string            `yaml:"format"`
 	Timeout time.Duration     `yaml:"timeout"`
 	Headers map[string]string `yaml:"headers"`
 }
@@ -532,7 +533,34 @@ func (c *Config) validateNotify() error {
 	if u.Host == "" {
 		return fmt.Errorf("notify: url must have a host")
 	}
+	switch c.Notify.Format {
+	case "", "auto", "dup", "discord", "slack", "teams", "google-chat":
+	default:
+		return fmt.Errorf("notify: format %q is not one of auto, dup, discord, slack, teams or google-chat", c.Notify.Format)
+	}
+	// A warning, never an error: dup check gates ExecStartPre for both units,
+	// and a webhook nobody reads is not a reason to refuse to start. Only fires
+	// when the operator has overridden the detection with something that cannot
+	// work, since the default resolves this on its own.
+	if c.Notify.Format == "dup" && IsDiscordWebhook(c.Notify.URL) {
+		c.warnings = append(c.warnings,
+			"notify.format is dup but notify.url is a discord webhook, which refuses that payload; remove the format line to let dup detect it, and check with: sudo dup notify")
+	}
 	return nil
+}
+
+// IsDiscordWebhook spots the endpoints that only accept discord's own body.
+func IsDiscordWebhook(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+	host := strings.ToLower(u.Hostname())
+	if host != "discord.com" && host != "discordapp.com" &&
+		!strings.HasSuffix(host, ".discord.com") && !strings.HasSuffix(host, ".discordapp.com") {
+		return false
+	}
+	return strings.Contains(u.Path, "/webhooks/")
 }
 
 // A config with no targets is valid. dup still enumerates what is on the host,

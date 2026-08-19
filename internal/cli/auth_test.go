@@ -124,3 +124,78 @@ func TestAuthArgsSuffixPreservesWhatWasTyped(t *testing.T) {
 		}
 	}
 }
+
+func authTestTarget(t *testing.T) (*config.Config, *config.Target) {
+	t.Helper()
+	base := t.TempDir()
+	path := filepath.Join(base, "config.yml")
+	body := "listen: \"127.0.0.1:7788\"\nagent_peer_user: dup\nlog_file: none\nhistory_file: none\n" +
+		"docker_config_dir: " + filepath.Join(base, "docker") + "\n" +
+		"targets:\n  - name: patchmon\n    dir: " + base + "\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.LoadBasic(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tgt, ok := cfg.Target("patchmon")
+	if !ok {
+		t.Fatal("target patchmon missing from the loaded config")
+	}
+	return cfg, tgt
+}
+
+// A public registry needs no credentials, so pressing enter past it is a choice
+// rather than a failure, and must not make the command exit non-zero.
+func TestAuthTreatsABlankUsernameAsLeavingTheRegistryAlone(t *testing.T) {
+	cfg, tgt := authTestTarget(t)
+
+	tally, err := authTarget(cfg, tgt, false, bufio.NewReader(strings.NewReader("ghcr.io\n\n\n")))
+	if err != nil {
+		t.Fatalf("authTarget: %v", err)
+	}
+	if tally.failed != 0 {
+		t.Errorf("failed = %d, want a blank username to count as skipped: %+v", tally.failed, tally)
+	}
+	if tally.skipped != 1 || tally.saved != 0 {
+		t.Errorf("tally = %+v, want exactly one skip", tally)
+	}
+}
+
+func TestAuthLeavesAHostThatAlreadyHasCredentialsAlone(t *testing.T) {
+	cfg, tgt := authTestTarget(t)
+
+	store := dockercfg.New()
+	if err := store.Set("cr.dev.patchmon.cloud", "robot$patchmon", strings.Repeat("s", 32)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Write(tgt.DockerConfigDir()); err != nil {
+		t.Fatal(err)
+	}
+
+	tally, err := authTarget(cfg, tgt, false, bufio.NewReader(strings.NewReader("cr.dev.patchmon.cloud\n")))
+	if err != nil {
+		t.Fatalf("authTarget: %v", err)
+	}
+	if tally.failed != 0 || tally.skipped != 1 || tally.saved != 0 {
+		t.Errorf("tally = %+v, want one skip and no failure", tally)
+	}
+}
+
+func TestAuthTallySummaryReadsAsEnglish(t *testing.T) {
+	cases := []struct {
+		in   authTally
+		want string
+	}{
+		{authTally{}, "nothing to do"},
+		{authTally{saved: 1}, "stored 1"},
+		{authTally{saved: 1, skipped: 2}, "stored 1, left 2 alone"},
+		{authTally{saved: 0, skipped: 1, failed: 1}, "stored 0, left 1 alone, could not store 1"},
+	}
+	for _, c := range cases {
+		if got := c.in.summary(); got != c.want {
+			t.Errorf("summary(%+v) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}

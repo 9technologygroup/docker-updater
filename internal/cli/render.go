@@ -12,13 +12,14 @@ import (
 )
 
 const (
-	liveWidth       = 78
-	stepNameCol     = 24
-	stepMarkCol     = 6
-	scanResultCol   = 16
-	scanServicesCol = 24
+	fallbackWidth = 78
+	minWidth      = 40
+	stepNameCol   = 24
+	stepMarkCol   = 6
+	scanResultCol = 16
 
 	maxStepOutputLines = 12
+	maxProgressLines   = 12
 )
 
 func stdoutIsTTY() bool {
@@ -61,8 +62,12 @@ func (r *jobRenderer) update(snap job.Snapshot) {
 
 func (r *jobRenderer) finish(snap job.Snapshot) {
 	if r.tty {
-		r.draw(append(jobSummaryLines(snap, false), jobStepLines(snap, time.Now(), false)...))
-		r.lines = 0
+		// Printed rather than drawn: the final block is unclipped so a long
+		// message survives whole, and nothing is redrawn over it afterwards.
+		r.erase()
+		for _, l := range append(jobSummaryLines(snap, false), jobStepLines(snap, time.Now(), false)...) {
+			_, _ = fmt.Fprintln(r.w, l)
+		}
 		return
 	}
 	r.begin(snap)
@@ -96,20 +101,21 @@ func (r *jobRenderer) emitSteps(snap job.Snapshot) {
 }
 
 func (r *jobRenderer) draw(lines []string) {
-	if r.lines > 0 {
-		_, _ = fmt.Fprintf(r.w, "\x1b[%dA", r.lines)
-	}
+	r.erase()
 	for _, l := range lines {
-		_, _ = fmt.Fprintf(r.w, "\r\x1b[2K%s\n", l)
-	}
-	extra := r.lines - len(lines)
-	for range extra {
-		_, _ = fmt.Fprint(r.w, "\r\x1b[2K\n")
-	}
-	if extra > 0 {
-		_, _ = fmt.Fprintf(r.w, "\x1b[%dA", extra)
+		_, _ = fmt.Fprintf(r.w, "%s\n", l)
 	}
 	r.lines = len(lines)
+}
+
+// erase clears the whole previous block rather than one row per logical line,
+// so anything that did wrap is still removed.
+func (r *jobRenderer) erase() {
+	if r.lines == 0 {
+		return
+	}
+	_, _ = fmt.Fprintf(r.w, "\x1b[%dA\r\x1b[0J", r.lines)
+	r.lines = 0
 }
 
 func jobSummaryLines(snap job.Snapshot, live bool) []string {
@@ -128,6 +134,9 @@ func jobStepLines(snap job.Snapshot, now time.Time, live bool) []string {
 	var lines []string
 	for _, s := range snap.Steps {
 		lines = append(lines, stepLine(s, now))
+		if s.Running {
+			lines = append(lines, progressLines(snap.Progress)...)
+		}
 		if live {
 			if s.Error != "" {
 				lines = append(lines, "      "+s.Error)
@@ -137,6 +146,38 @@ func jobStepLines(snap job.Snapshot, now time.Time, live bool) []string {
 		lines = append(lines, stepDetail(s)...)
 	}
 	return fitLines(lines, live)
+}
+
+// progressLines name the services a running step is waiting on, so a health
+// check that sits there for minutes says which service is holding it up.
+func progressLines(states []job.ServiceState) []string {
+	if len(states) == 0 {
+		return nil
+	}
+	width := 0
+	for _, st := range states {
+		if len(st.Service) > width {
+			width = len(st.Service)
+		}
+	}
+	shown := states
+	var extra int
+	if len(shown) > maxProgressLines {
+		extra = len(shown) - maxProgressLines
+		shown = shown[:maxProgressLines]
+	}
+	lines := make([]string, 0, len(shown)+1)
+	for _, st := range shown {
+		health := st.Health
+		if health == "" {
+			health = "no healthcheck"
+		}
+		lines = append(lines, fmt.Sprintf("      %-*s  %-10s %s", width, st.Service, orDash(st.State), health))
+	}
+	if extra > 0 {
+		lines = append(lines, fmt.Sprintf("      and %d more", extra))
+	}
+	return lines
 }
 
 func stepLine(s job.Step, now time.Time) string {
@@ -193,16 +234,26 @@ func stepDetail(s job.Step) []string {
 	return lines
 }
 
+// liveWidth keeps a redrawn line inside one screen row. The cursor maths counts
+// logical lines, so a line that wraps desynchronises every frame after it.
+func liveWidth() int {
+	if w := terminalWidth(int(os.Stdout.Fd())); w >= minWidth {
+		return w - 1
+	}
+	return fallbackWidth
+}
+
 // fitLines keeps a redrawn block one screen line per logical line. The cursor
 // maths counts logical lines, so an embedded newline or a wrap desynchronises it.
 func fitLines(lines []string, live bool) []string {
+	width := liveWidth()
 	if !live {
 		return lines
 	}
 	out := make([]string, len(lines))
 	for i, l := range lines {
 		l = strings.ReplaceAll(l, "\n", " ")
-		out[i] = clip(strings.ReplaceAll(l, "\t", " "), liveWidth)
+		out[i] = clip(strings.ReplaceAll(l, "\t", " "), width)
 	}
 	return out
 }
@@ -238,26 +289,26 @@ func newScanTable(w io.Writer, tty bool, targets []string) *scanTable {
 }
 
 func (t *scanTable) header() {
-	_, _ = fmt.Fprintln(t.w, t.row("STACK", "RESULT", "SERVICES", "DETAIL"))
+	_, _ = fmt.Fprintln(t.w, t.row("STACK", "RESULT", "DETAIL"))
 }
 
 func (t *scanTable) checking(name string) {
 	if !t.tty {
 		return
 	}
-	_, _ = fmt.Fprintln(t.w, t.row(name, "checking...", "", ""))
+	_, _ = fmt.Fprintln(t.w, t.row(name, "checking...", ""))
 	t.pending = true
 }
 
-func (t *scanTable) result(name, result, services, detail string) {
+func (t *scanTable) result(name, result, detail string) {
 	if t.pending {
 		_, _ = fmt.Fprint(t.w, "\x1b[1A\r\x1b[2K")
 		t.pending = false
 	}
-	_, _ = fmt.Fprintln(t.w, t.row(name, result, services, detail))
+	_, _ = fmt.Fprintln(t.w, t.row(name, result, detail))
 }
 
-func (t *scanTable) row(stack, result, services, detail string) string {
-	return strings.TrimRight(fmt.Sprintf("%-*s  %-*s  %-*s  %s",
-		t.stack, stack, scanResultCol, result, scanServicesCol, services, detail), " ")
+func (t *scanTable) row(stack, result, detail string) string {
+	return strings.TrimRight(fmt.Sprintf("%-*s  %-*s  %s",
+		t.stack, stack, scanResultCol, result, detail), " ")
 }
