@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/9technologygroup/docker-updater/internal/config"
@@ -80,7 +79,7 @@ func runScan(args []string) error {
 		var out scanResult
 		err := client.do(ctx, http.MethodPost, "/v1/targets/"+name+"/check", "", &out)
 
-		outcome, result, services, detail := classifyScan(out, err)
+		outcome, result, detail := classifyScan(out, err)
 		switch outcome {
 		case scanBusy:
 			busy++
@@ -91,7 +90,7 @@ func runScan(args []string) error {
 			available++
 		case scanUpToDate:
 		}
-		table.result(name, result, services, detail)
+		table.result(name, result, detail)
 	}
 
 	for _, p := range problems {
@@ -119,19 +118,19 @@ func runScan(args []string) error {
 	return nil
 }
 
-func classifyScan(out scanResult, err error) (outcome scanOutcome, result, services, detail string) {
+func classifyScan(out scanResult, err error) (outcome scanOutcome, result, detail string) {
 	var se *apiStatusError
 	refused := errors.As(err, &se)
 	switch {
 	// A target already being checked or updated is not a fault. The agent
 	// serialises per stack, and the scheduler may simply have got there first.
 	case refused && (se.status == http.StatusConflict || se.status == http.StatusServiceUnavailable):
-		return scanBusy, "busy", "-", "already being checked or updated, try again shortly"
+		return scanBusy, "busy", "already being checked or updated, try again shortly"
 	case err != nil:
-		return scanFailed, "check FAILED", "-", "see below"
+		return scanFailed, "check FAILED", "see below"
 	case out.Available:
-		return scanAvailable, "update available", orDash(clip(strings.Join(out.Changed, ","), scanServicesCol)), clip(out.Message, 44)
+		return scanAvailable, "update available", clip(out.Message, 64)
 	default:
-		return scanUpToDate, "up to date", "-", clip(out.Message, 44)
+		return scanUpToDate, "up to date", clip(out.Message, 64)
 	}
 }

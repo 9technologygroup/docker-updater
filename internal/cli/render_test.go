@@ -232,7 +232,7 @@ func TestClassifyScan(t *testing.T) {
 		wantResult  string
 	}{
 		{"up to date", scanResult{Message: "app is current"}, nil, scanUpToDate, "up to date"},
-		{"available", scanResult{Available: true, Changed: []string{"app"}}, nil, scanAvailable, "update available"},
+		{"available", scanResult{Available: true, Changed: []string{"app"}, Message: "new image for app"}, nil, scanAvailable, "update available"},
 		{"busy on 409", scanResult{}, &apiStatusError{status: http.StatusConflict}, scanBusy, "busy"},
 		{"busy on 503", scanResult{}, &apiStatusError{status: http.StatusServiceUnavailable}, scanBusy, "busy"},
 		{"failed on 500", scanResult{}, &apiStatusError{status: http.StatusInternalServerError}, scanFailed, "check FAILED"},
@@ -240,15 +240,17 @@ func TestClassifyScan(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			outcome, result, services, _ := classifyScan(c.out, c.err)
+			outcome, result, detail := classifyScan(c.out, c.err)
 			if outcome != c.wantOutcome {
 				t.Errorf("outcome = %d, want %d", outcome, c.wantOutcome)
 			}
 			if result != c.wantResult {
 				t.Errorf("result = %q, want %q", result, c.wantResult)
 			}
-			if c.wantOutcome == scanAvailable && services != "app" {
-				t.Errorf("services = %q, want the changed service", services)
+			// The detail carries the changed services, which is why there is
+			// no separate column for them.
+			if c.wantOutcome == scanAvailable && !strings.Contains(detail, "app") {
+				t.Errorf("detail = %q, want it to name the changed service", detail)
 			}
 		})
 	}
@@ -260,15 +262,15 @@ func TestScanTableNonTTYPrintsOneRowPerTarget(t *testing.T) {
 	table.header()
 
 	table.checking("quackback")
-	table.result("quackback", "update available", "app", "app: new image")
+	table.result("quackback", "update available", "new image for app")
 	table.checking("web")
-	table.result("web", "up to date", "-", "")
+	table.result("web", "up to date", "already running the latest images")
 
 	got := lines(buf.String())
 	want := []string{
-		"STACK      RESULT            SERVICES                  DETAIL",
-		"quackback  update available  app                       app: new image",
-		"web        up to date        -",
+		"STACK      RESULT            DETAIL",
+		"quackback  update available  new image for app",
+		"web        up to date        already running the latest images",
 	}
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Errorf("got:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
@@ -291,7 +293,7 @@ func TestScanTableTTYRewritesThePlaceholderRow(t *testing.T) {
 	}
 
 	buf.Reset()
-	table.result("quackback", "up to date", "-", "")
+	table.result("quackback", "up to date", "already running the latest images")
 	if !strings.HasPrefix(buf.String(), "\x1b[1A\r\x1b[2K") {
 		t.Errorf("the result did not overwrite the placeholder row: %q", buf.String())
 	}

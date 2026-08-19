@@ -12,11 +12,10 @@ import (
 )
 
 const (
-	liveWidth       = 78
-	stepNameCol     = 24
-	stepMarkCol     = 6
-	scanResultCol   = 16
-	scanServicesCol = 24
+	liveWidth     = 78
+	stepNameCol   = 24
+	stepMarkCol   = 6
+	scanResultCol = 16
 
 	maxStepOutputLines = 12
 )
@@ -238,26 +237,26 @@ func newScanTable(w io.Writer, tty bool, targets []string) *scanTable {
 }
 
 func (t *scanTable) header() {
-	_, _ = fmt.Fprintln(t.w, t.row("STACK", "RESULT", "SERVICES", "DETAIL"))
+	_, _ = fmt.Fprintln(t.w, t.row("STACK", "RESULT", "DETAIL"))
 }
 
 func (t *scanTable) checking(name string) {
 	if !t.tty {
 		return
 	}
-	_, _ = fmt.Fprintln(t.w, t.row(name, "checking...", "", ""))
+	_, _ = fmt.Fprintln(t.w, t.row(name, "checking...", ""))
 	t.pending = true
 }
 
-func (t *scanTable) result(name, result, services, detail string) {
+func (t *scanTable) result(name, result, detail string) {
 	if t.pending {
 		_, _ = fmt.Fprint(t.w, "\x1b[1A\r\x1b[2K")
 		t.pending = false
 	}
-	_, _ = fmt.Fprintln(t.w, t.row(name, result, services, detail))
+	_, _ = fmt.Fprintln(t.w, t.row(name, result, detail))
 }
 
-func (t *scanTable) row(stack, result, services, detail string) string {
-	return strings.TrimRight(fmt.Sprintf("%-*s  %-*s  %-*s  %s",
-		t.stack, stack, scanResultCol, result, scanServicesCol, services, detail), " ")
+func (t *scanTable) row(stack, result, detail string) string {
+	return strings.TrimRight(fmt.Sprintf("%-*s  %-*s  %s",
+		t.stack, stack, scanResultCol, result, detail), " ")
 }

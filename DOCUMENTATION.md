@@ -1082,10 +1082,14 @@ holding the whole table until the end. On a terminal the stack being checked sho
 `checking...` and is rewritten in place when its answer arrives:
 
 ```
-STACK      RESULT            SERVICES                  DETAIL
-quackback  update available  app                       app: new image
-web        up to date        -
+STACK      RESULT            DETAIL
+quackback  update available  new image for app
+web        up to date        already running the latest images
 ```
+
+There is no separate services column. The services that changed are named in the
+detail, so a column for them only repeated it and pushed the detail off a narrow
+terminal.
 
 ### Seeing what is going on
 
