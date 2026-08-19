@@ -35,6 +35,7 @@ func commands() []command {
 		{"audit", groupSetup, "verify the service account cannot rewrite what runs as root", runAudit},
 		{"cert", groupSetup, "generate the self-signed TLS certificate (root)", runCert},
 		{"auth", groupSetup, "store per-stack registry credentials (root)", runAuth},
+		{"notify", groupSetup, "send a test notification to the outbound webhook", runNotify},
 
 		{"list", groupDaily, "show configured stacks, their update policy, and what dup is not covering", runList},
 		{"logs", groupDaily, "show finished updates, newest first. --job <id> for one in full", runLogs},

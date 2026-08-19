@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -13,13 +14,36 @@ import (
 	"github.com/9technologygroup/docker-updater/internal/job"
 )
 
+const (
+	FormatDup     = "dup"
+	FormatDiscord = "discord"
+)
+
+// maxResponse is what is kept from a rejection. The reason a webhook refused
+// is in its body, and discarding it was why a misconfigured endpoint looked
+// silent rather than broken.
+const maxResponse = 2 << 10
+
 type Notifier struct {
 	url     string
+	format  string
 	headers map[string]string
 	client  *http.Client
 	log     *slog.Logger
 	host    string
 }
+
+// Result is what came back, so a caller can show it rather than guess.
+type Result struct {
+	URL      string
+	Format   string
+	Status   int
+	Body     string
+	Sent     []byte
+	Duration time.Duration
+}
+
+func (r Result) OK() bool { return r.Status > 0 && r.Status < 300 }
 
 type payload struct {
 	Host       string       `json:"host"`
@@ -32,6 +56,7 @@ type payload struct {
 	Trigger    string       `json:"trigger,omitempty"`
 	Reason     string       `json:"reason,omitempty"`
 	Changed    []string     `json:"changed_services,omitempty"`
+	Test       bool         `json:"test,omitempty"`
 	Images     []imageState `json:"images,omitempty"`
 	DurationMS int64        `json:"duration_ms"`
 	FinishedAt time.Time    `json:"finished_at"`
@@ -48,8 +73,13 @@ func New(cfg config.Notify, host string, log *slog.Logger) *Notifier {
 	if cfg.URL == "" {
 		return nil
 	}
+	format := cfg.Format
+	if format == "" {
+		format = FormatDup
+	}
 	return &Notifier{
 		url:     cfg.URL,
+		format:  format,
 		headers: cfg.Headers,
 		client:  &http.Client{Timeout: cfg.Timeout},
 		log:     log,
@@ -57,21 +87,23 @@ func New(cfg config.Notify, host string, log *slog.Logger) *Notifier {
 	}
 }
 
-func (n *Notifier) Notify(ctx context.Context, snap job.Snapshot) {
-	if n == nil {
-		return
-	}
+func (n *Notifier) URL() string    { return n.url }
+func (n *Notifier) Format() string { return n.format }
 
-	body, err := json.Marshal(n.build(snap))
+// Deliver posts one notification and reports what happened. Notify wraps it for
+// the scheduler, which only wants it logged.
+func (n *Notifier) Deliver(ctx context.Context, snap job.Snapshot, test bool) (Result, error) {
+	res := Result{URL: n.url, Format: n.format}
+
+	body, err := n.encode(snap, test)
 	if err != nil {
-		n.log.Error("notify: marshal failed", "job", snap.ID, "error", err)
-		return
+		return res, err
 	}
+	res.Sent = body
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, n.url, bytes.NewReader(body))
 	if err != nil {
-		n.log.Error("notify: build request failed", "job", snap.ID, "error", err)
-		return
+		return res, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", "dup")
@@ -79,18 +111,51 @@ func (n *Notifier) Notify(ctx context.Context, snap job.Snapshot) {
 		req.Header.Set(k, v)
 	}
 
+	start := time.Now()
 	resp, err := n.client.Do(req)
+	res.Duration = time.Since(start)
 	if err != nil {
-		n.log.Error("notify: request failed", "job", snap.ID, "error", err)
-		return
+		return res, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	if resp.StatusCode >= 300 {
-		n.log.Error("notify: rejected", "job", snap.ID, "status", resp.StatusCode)
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, maxResponse))
+	res.Status = resp.StatusCode
+	res.Body = strings.TrimSpace(string(raw))
+	return res, nil
+}
+
+func (n *Notifier) encode(snap job.Snapshot, test bool) ([]byte, error) {
+	p := n.build(snap)
+	p.Test = test
+	if n.format == FormatDiscord {
+		// Discord refuses anything without content, embeds or files, so the
+		// summary sentence is what it gets.
+		return json.Marshal(struct {
+			Content string `json:"content"`
+		}{Content: p.Summary})
+	}
+	return json.Marshal(p)
+}
+
+func (n *Notifier) Notify(ctx context.Context, snap job.Snapshot) {
+	if n == nil {
 		return
 	}
-	n.log.Info("notify: delivered", "job", snap.ID, "status", resp.StatusCode)
+
+	res, err := n.Deliver(ctx, snap, false)
+	if err != nil {
+		n.log.Error("notify: request failed", "job", snap.ID, "url", n.url, "error", err)
+		return
+	}
+	if !res.OK() {
+		// The body is the only thing that says why, and dropping it made a
+		// misconfigured endpoint look silent instead of broken.
+		n.log.Error("notify: rejected", "job", snap.ID, "url", n.url,
+			"status", res.Status, "format", n.format, "response", res.Body)
+		return
+	}
+	n.log.Info("notify: delivered", "job", snap.ID, "status", res.Status, "format", n.format)
 }
 
 func (n *Notifier) build(snap job.Snapshot) payload {

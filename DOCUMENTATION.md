@@ -188,6 +188,7 @@ do the same thing. `dup <command> -h` prints that command's flags and exits 0.
 | `dup check` | Validate the config, warn if the running agent has a different one, and report which stacks have registry credentials of their own |
 | `dup audit` | Prove the service account cannot rewrite what runs as root |
 | `dup cert` | Generate the self-signed TLS certificate. Root only |
+| `dup notify` | Send a test notification to the outbound webhook and show exactly what came back |
 | `dup auth [stack]` | Store a stack's own registry credentials. Root only |
 | `dup version` | Version, commit, and whether a newer release is out |
 | `dup serve` | The unprivileged HTTP API. systemd runs this |
@@ -211,6 +212,7 @@ waiting to apply, and what is quietly drifting outside it".
 | `logs` | `--full` | `false` | Show every step of each job, not just the summary |
 | `scan` | `--timeout` | `15m` | Budget for the whole scan across every stack |
 | `list` | `--all` | `false` | Also list compose projects dup already covers |
+| `notify` | `--quiet` | `false` | Print one line and the exit code only, for cron or a health check |
 | `cert` | `--force` | `false` | Replace an existing certificate |
 | `cert` | `--defaults` | `false` | Generate at the default paths without reading a config, which is what the installer uses on a fresh host |
 | `auth` | `--list` | `false` | List what is stored: stack, registry host, username and when that stack's store was last written. Never the secret |
@@ -317,6 +319,7 @@ over both forms.
 | Key | Default | Meaning |
 |---|---|---|
 | `url` | empty, disabled | Where to POST the result of every finished job. `http` or `https` only |
+| `format` | `dup` | `dup` posts the JSON below. `discord` posts `{"content": "<summary>"}`, which is the only shape a Discord webhook accepts |
 | `timeout` | `15s` | How long to wait for it |
 | `headers` | none | Extra headers, for an auth token on the receiving end |
 
@@ -984,7 +987,42 @@ When `notify.url` is set, every finished job POSTs a summary there:
 }
 ```
 
-`ok` is there so n8n can branch without parsing prose, and `summary` is ready to post straight to Discord. `trigger` is `api`, `github` or `auto`.
+`ok` is there so n8n can branch without parsing prose. `trigger` is `api`, `github` or `auto`.
+
+### Testing it without running an update
+
+```bash
+sudo dup notify
+```
+
+That posts a synthetic job to `notify.url` and prints the request, the status, the round
+trip time and the response body. Nothing Docker related happens and no stack is touched.
+The payload carries `"test": true` so the receiving end can tell it apart from a real
+update. `--quiet` reduces it to one line and an exit code, for cron.
+
+The response body is the point. A webhook that refuses a payload says why in its body, and
+that is the part you cannot see anywhere else.
+
+### Posting straight to Discord
+
+A Discord webhook URL does not accept dup's payload. Discord refuses any body without
+`content`, `embeds` or `files`, so it answers `400` with `Cannot send an empty message` and
+nothing appears in your channel. Set the format:
+
+```yaml
+notify:
+  url: "https://discord.com/api/webhooks/…/…"
+  format: discord
+```
+
+dup then posts `{"content": "<summary>"}`, which is the sentence `summary` already held. You
+lose the machine readable fields, because Discord has nowhere to put them. If you want both,
+point `notify.url` at n8n and let it post to Discord, which is what the default format is
+shaped for.
+
+`dup check` warns when the URL looks like a Discord webhook and the format is not set. It is
+a warning rather than an error on purpose: `dup check` gates `ExecStartPre` for both units,
+and a webhook nobody reads is not a reason for a host to refuse to start.
 
 ---
 
