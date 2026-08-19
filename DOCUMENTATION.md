@@ -977,18 +977,42 @@ When `notify.url` is set, every finished job POSTs a summary there:
 
 ```json
 {
+  "event": "update_rolled_back",
   "host": "web01",
   "target": "app",
+  "job_id": "9f2c1a77b3e4d508",
   "state": "rolled_back",
   "ok": false,
-  "summary": "Rolled back app on web01: update failed, rolled back to the previous images",
+  "summary": "Rolled back app on web01 (app): update failed, rolled back to the previous images",
+  "text": "Rolled back app on web01 (app): update failed, rolled back to the previous images",
+  "message": "update failed, rolled back to the previous images",
   "trigger": "auto",
   "changed_services": ["app"],
-  "duration_ms": 47213
+  "duration_ms": 47213,
+  "finished_at": "2026-08-19T09:14:03Z"
 }
 ```
 
-`ok` is there so n8n can branch without parsing prose. `trigger` is `api`, `github` or `auto`.
+`event` names which of the events below this is, and is the field to branch on. `ok` is
+there so n8n can branch without parsing prose. `trigger` is `api`, `github` or `auto`.
+`text` carries the same sentence as `summary`, for the chat platforms that read that field.
+
+An event that is not about a job carries no job fields at all, rather than empty ones:
+
+```json
+{
+  "event": "update_available",
+  "host": "web01",
+  "target": "app",
+  "ok": true,
+  "summary": "New image for web on app (web01), applying at 09:44 UTC",
+  "text": "New image for web on app (web01), applying at 09:44 UTC",
+  "trigger": "auto",
+  "changed_services": ["web"],
+  "applies_at": "2026-08-19T09:44:03Z",
+  "finished_at": "2026-08-19T09:48:48Z"
+}
+```
 
 ### Choosing what gets sent
 

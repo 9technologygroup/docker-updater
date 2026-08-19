@@ -321,3 +321,43 @@ func TestAvailableCarriesWhenItWillApply(t *testing.T) {
 		t.Errorf("changed_services = %v, want both", p["changed_services"])
 	}
 }
+
+// A non-job event has no job, so it must not carry empty job fields that a
+// receiver would have to know to ignore.
+func TestANonJobEventOmitsTheJobFields(t *testing.T) {
+	srv, got, _ := recorder(t, 200, "")
+	n := New(config.Notify{URL: srv.URL, Timeout: 5 * time.Second,
+		Events: map[string]bool{config.EventUpdateAvailable: true}}, "web01", quietLog())
+
+	n.Available(context.Background(), "app", []string{"web"}, time.Now().Add(time.Hour))
+
+	var p map[string]any
+	if err := json.Unmarshal(*got, &p); err != nil {
+		t.Fatal(err)
+	}
+	for _, absent := range []string{"state", "job_id", "duration_ms"} {
+		if _, ok := p[absent]; ok {
+			t.Errorf("%q should be omitted for a non-job event: %s", absent, *got)
+		}
+	}
+	for _, present := range []string{"event", "target", "summary", "applies_at"} {
+		if _, ok := p[present]; !ok {
+			t.Errorf("%q is missing: %s", present, *got)
+		}
+	}
+}
+
+func TestAJobEventStillCarriesStateAndID(t *testing.T) {
+	srv, got, _ := recorder(t, 200, "")
+	n := New(config.Notify{URL: srv.URL, Timeout: 5 * time.Second}, "web01", quietLog())
+
+	n.Notify(context.Background(), snap())
+
+	var p map[string]any
+	if err := json.Unmarshal(*got, &p); err != nil {
+		t.Fatal(err)
+	}
+	if p["state"] != "succeeded" || p["job_id"] != "abc123" {
+		t.Errorf("a finished job must keep state and job_id: %s", *got)
+	}
+}

@@ -84,8 +84,8 @@ func (r Result) OK() bool { return r.Status > 0 && r.Status < 300 }
 type payload struct {
 	Host       string       `json:"host"`
 	Target     string       `json:"target"`
-	JobID      string       `json:"job_id"`
-	State      string       `json:"state"`
+	JobID      string       `json:"job_id,omitempty"`
+	State      string       `json:"state,omitempty"`
 	OK         bool         `json:"ok"`
 	Summary    string       `json:"summary"`
 	Message    string       `json:"message,omitempty"`
@@ -98,7 +98,7 @@ type payload struct {
 	Error      string       `json:"error,omitempty"`
 	Text       string       `json:"text,omitempty"`
 	Images     []imageState `json:"images,omitempty"`
-	DurationMS int64        `json:"duration_ms"`
+	DurationMS int64        `json:"duration_ms,omitempty"`
 	FinishedAt time.Time    `json:"finished_at"`
 }
 
