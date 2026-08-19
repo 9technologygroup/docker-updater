@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"os"
 	"strings"
-	"text/tabwriter"
 	"time"
 
 	"github.com/9technologygroup/docker-updater/internal/config"
@@ -19,6 +18,15 @@ type scanResult struct {
 	Changed   []string `json:"changed"`
 	Message   string   `json:"message"`
 }
+
+type scanOutcome int
+
+const (
+	scanUpToDate scanOutcome = iota
+	scanAvailable
+	scanBusy
+	scanFailed
+)
 
 func runScan(args []string) error {
 	fs, configPath := newFlagSet("scan")
@@ -57,8 +65,8 @@ func runScan(args []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 	defer cancel()
 
-	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	_, _ = fmt.Fprintln(w, "STACK\tRESULT\tSERVICES\tDETAIL")
+	table := newScanTable(os.Stdout, stdoutIsTTY(), targets)
+	table.header()
 
 	available, failed, busy := 0, 0, 0
 	// Clipping an error into a table cell can hide the only copy of it, so the
@@ -67,35 +75,23 @@ func runScan(args []string) error {
 	// Sequentially: the agent serialises per target and caps concurrency anyway,
 	// and a parallel scan would just queue behind that while pulling in bulk.
 	for _, name := range targets {
+		table.checking(name)
+
 		var out scanResult
 		err := client.do(ctx, http.MethodPost, "/v1/targets/"+name+"/check", "", &out)
 
-		result, services, detail := "up to date", "-", ""
-		var se *apiStatusError
-		refused := errors.As(err, &se)
-
-		switch {
-		// A target already being checked or updated is not a fault. The agent
-		// serialises per stack, and the scheduler may simply have got there first.
-		case refused && (se.status == http.StatusConflict || se.status == http.StatusServiceUnavailable):
+		outcome, result, services, detail := classifyScan(out, err)
+		switch outcome {
+		case scanBusy:
 			busy++
-			result, detail = "busy", "already being checked or updated, try again shortly"
-		case err != nil:
+		case scanFailed:
 			failed++
-			result, detail = "check FAILED", "see below"
 			problems = append(problems, name+": "+err.Error())
-		case out.Available:
+		case scanAvailable:
 			available++
-			result = "update available"
-			services = orDash(clip(strings.Join(out.Changed, ","), 24))
-			detail = clip(out.Message, 44)
-		default:
-			detail = clip(out.Message, 44)
+		case scanUpToDate:
 		}
-		_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", name, result, services, detail)
-	}
-	if err := w.Flush(); err != nil {
-		return err
+		table.result(name, result, services, detail)
 	}
 
 	for _, p := range problems {
@@ -121,4 +117,21 @@ func runScan(args []string) error {
 	}
 	fmt.Printf("\nThis did not change anything. Auto-update stacks still wait out their soak.\n")
 	return nil
+}
+
+func classifyScan(out scanResult, err error) (outcome scanOutcome, result, services, detail string) {
+	var se *apiStatusError
+	refused := errors.As(err, &se)
+	switch {
+	// A target already being checked or updated is not a fault. The agent
+	// serialises per stack, and the scheduler may simply have got there first.
+	case refused && (se.status == http.StatusConflict || se.status == http.StatusServiceUnavailable):
+		return scanBusy, "busy", "-", "already being checked or updated, try again shortly"
+	case err != nil:
+		return scanFailed, "check FAILED", "-", "see below"
+	case out.Available:
+		return scanAvailable, "update available", orDash(clip(strings.Join(out.Changed, ","), scanServicesCol)), clip(out.Message, 44)
+	default:
+		return scanUpToDate, "up to date", "-", clip(out.Message, 44)
+	}
 }

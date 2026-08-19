@@ -63,6 +63,7 @@ func runCheck(args []string) error {
 	if hooks > 0 {
 		fmt.Printf("  pre-update   %d %s configured\n", hooks, plural(hooks, "hook", "hooks"))
 	}
+	printDockerConfigStatus(cfg)
 
 	printWarnings(cfg)
 	printAgentDrift(cfg)
@@ -88,6 +89,26 @@ func printWarnings(cfg *config.Config) {
 		fmt.Printf("  %s\n", w)
 	}
 	fmt.Printf("\ndup will start, and updates for those stacks will fail until the path is there.\n")
+}
+
+// printDockerConfigStatus is informational only: it never fails the check, since
+// a stack with no credentials of its own may simply be pulling public images or
+// relying on root's own docker login.
+func printDockerConfigStatus(cfg *config.Config) {
+	withStore, without := 0, 0
+	for _, t := range cfg.Targets {
+		if t.HasDockerConfig() {
+			withStore++
+		} else {
+			without++
+		}
+	}
+	if withStore > 0 {
+		fmt.Printf("  registry auth %d %s own credentials\n", withStore, plural(withStore, "stack has", "stacks have"))
+	}
+	if without > 0 {
+		fmt.Printf("  registry auth %d %s root's docker config\n", without, plural(without, "stack falls back to", "stacks fall back to"))
+	}
 }
 
 // printAgentDrift is the whole point of running check after an edit: the file can

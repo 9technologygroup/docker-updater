@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -38,22 +39,23 @@ func (e *Pipeline) Update(ctx context.Context, t *config.Target, req job.Request
 
 func (e *Pipeline) Check(ctx context.Context, t *config.Target) (wire.CheckResult, error) {
 	var sink discardSink
+	env := targetEnv(t, "")
 
-	if res := e.docker.Validate(ctx, t, nil); res.Err != nil {
+	if res := e.docker.Validate(ctx, t, env); res.Err != nil {
 		return wire.CheckResult{}, fmt.Errorf("compose file validation failed: %w", res.Err)
 	}
 
-	before, res := e.docker.Containers(ctx, t, nil)
+	before, res := e.docker.Containers(ctx, t, env)
 	if res.Err != nil {
 		return wire.CheckResult{}, fmt.Errorf("could not inspect current containers: %w", res.Err)
 	}
 
-	desired := e.resolveImages(ctx, &sink, t, nil, before)
+	desired := e.resolveImages(ctx, &sink, t, env, before)
 
 	pullCtx, cancel := context.WithTimeout(ctx, t.PullTimeout)
 	defer cancel()
-	if res := e.docker.Pull(pullCtx, t, nil, slices.Clone(t.Services)); res.Err != nil {
-		return wire.CheckResult{}, fmt.Errorf("docker compose pull failed: %s", strings.TrimSpace(res.Output))
+	if res := e.docker.Pull(pullCtx, t, env, slices.Clone(t.Services)); res.Err != nil {
+		return wire.CheckResult{}, errors.New(parsePull(res.Output).detail(t, res.Output))
 	}
 
 	changed := e.changedServices(ctx, before, desired, t)
@@ -67,15 +69,33 @@ func (e *Pipeline) Check(ctx context.Context, t *config.Target) (wire.CheckResul
 	}, nil
 }
 
+// Images resolves what a stack pulls, so the unprivileged half can name the
+// registries a credential prompt is about without being able to run docker.
+func (e *Pipeline) Images(ctx context.Context, t *config.Target) (wire.ImagesResult, error) {
+	desired, res := e.docker.DesiredImages(ctx, t, targetEnv(t, ""))
+	if res.Err != nil {
+		return wire.ImagesResult{}, fmt.Errorf("could not resolve the images for %s: %w (%s)", t.Name, res.Err, strings.TrimSpace(res.Output))
+	}
+
+	images := make(map[string]string, len(desired))
+	for service, ref := range desired {
+		if wanted(t, service) {
+			images[service] = ref
+		}
+	}
+	return wire.ImagesResult{Images: images, Registries: registryHosts(t, images)}, nil
+}
+
 type discardSink struct{}
 
+func (discardSink) StartStep(string)             {}
 func (discardSink) AddStep(job.Step)             {}
 func (discardSink) SetBefore([]job.ServiceState) {}
 func (discardSink) SetAfter([]job.ServiceState)  {}
 func (discardSink) SetChanged([]string)          {}
 
 func (e *Pipeline) pipeline(ctx context.Context, t *config.Target, sink job.Sink, req job.Request) (job.State, string) {
-	env := tagEnv(t, req.Tag)
+	env := targetEnv(t, req.Tag)
 
 	if res := e.step(sink, "validate", func() compose.Result { return e.docker.Validate(ctx, t, env) }); res.Err != nil {
 		return job.StateFailed, "compose file validation failed"
@@ -100,7 +120,7 @@ func (e *Pipeline) pipeline(ctx context.Context, t *config.Target, sink job.Sink
 	res = e.step(sink, "pull", func() compose.Result { return e.docker.Pull(pullCtx, t, env, updateServices) })
 	cancelPull()
 	if res.Err != nil {
-		return job.StateFailed, "docker compose pull failed"
+		return job.StateFailed, parsePull(res.Output).summary(t)
 	}
 
 	changed := e.changedServices(ctx, before, desired, t)
@@ -148,6 +168,9 @@ func (e *Pipeline) runPreUpdate(ctx context.Context, t *config.Target, sink job.
 		return "", true
 	}
 
+	name := "pre-update"
+	sink.StartStep(name)
+
 	start := time.Now()
 	hookCtx, cancel := context.WithTimeout(ctx, hook.Timeout)
 	defer cancel()
@@ -171,7 +194,7 @@ func (e *Pipeline) runPreUpdate(ctx context.Context, t *config.Target, sink job.
 	}
 
 	step := job.Step{
-		Name:       "pre-update",
+		Name:       name,
 		Command:    cmdString(hook.Command, hook.Args),
 		StartedAt:  start.UTC(),
 		DurationMS: time.Since(start).Milliseconds(),
@@ -202,7 +225,7 @@ func truncateOutput(s string) string {
 
 func (e *Pipeline) rollback(ctx context.Context, t *config.Target, sink job.Sink, before []compose.Container, updateServices, healthServices []string, cause string) (job.State, string) {
 	if !t.RollbackEnabled() {
-		after, _ := e.snapshotContainers(ctx, sink, "inspect-after", t, tagEnv(t, ""))
+		after, _ := e.snapshotContainers(ctx, sink, "inspect-after", t, targetEnv(t, ""))
 		sink.SetAfter(toServiceStates(after))
 		return job.StateFailed, cause + " (rollback disabled)"
 	}
@@ -210,7 +233,7 @@ func (e *Pipeline) rollback(ctx context.Context, t *config.Target, sink job.Sink
 	rbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), t.HealthTimeout+rollbackSlack)
 	defer cancel()
 
-	env := tagEnv(t, previousTag(t, before))
+	env := targetEnv(t, previousTag(t, before))
 	desired := e.resolveImages(rbCtx, sink, t, env, before)
 
 	var missing, retagFailed []string
@@ -263,6 +286,7 @@ func (e *Pipeline) rollback(ctx context.Context, t *config.Target, sink job.Sink
 }
 
 func (e *Pipeline) waitHealthy(ctx context.Context, t *config.Target, sink job.Sink, env, healthServices []string, stepName string) error {
+	done := begin(sink, stepName)
 	start := time.Now()
 	deadline := start.Add(t.HealthTimeout)
 	ticker := time.NewTicker(healthPollInterval)
@@ -281,7 +305,7 @@ func (e *Pipeline) waitHealthy(ctx context.Context, t *config.Target, sink job.S
 					settledSince = time.Now()
 				}
 				if time.Since(settledSince) >= t.StabilityWindow {
-					e.record(sink, stepName, start, nil, describe(containers))
+					done(nil, describe(containers))
 					return nil
 				}
 			} else {
@@ -289,7 +313,7 @@ func (e *Pipeline) waitHealthy(ctx context.Context, t *config.Target, sink job.S
 				if time.Since(start) > failFastGrace {
 					if svc, ok := crashed(containers, healthServices); ok {
 						err := fmt.Errorf("service %q is not running after update", svc)
-						e.record(sink, stepName, start, err, describe(containers))
+						done(err, describe(containers))
 						return err
 					}
 				}
@@ -298,14 +322,14 @@ func (e *Pipeline) waitHealthy(ctx context.Context, t *config.Target, sink job.S
 
 		if time.Now().After(deadline) {
 			err := fmt.Errorf("timed out after %s waiting for services to become healthy", t.HealthTimeout)
-			e.record(sink, stepName, start, err, describe(last))
+			done(err, describe(last))
 			return err
 		}
 
 		select {
 		case <-ctx.Done():
 			err := fmt.Errorf("cancelled while waiting for services to become healthy: %w", ctx.Err())
-			e.record(sink, stepName, start, err, describe(last))
+			done(err, describe(last))
 			return err
 		case <-ticker.C:
 		}
@@ -332,7 +356,7 @@ func (e *Pipeline) changedServices(ctx context.Context, before []compose.Contain
 }
 
 func (e *Pipeline) resolveImages(ctx context.Context, sink job.Sink, t *config.Target, env []string, before []compose.Container) map[string]string {
-	start := time.Now()
+	done := begin(sink, "resolve-images")
 	desired, res := e.docker.DesiredImages(ctx, t, env)
 	if res.Err != nil {
 		desired = make(map[string]string, len(before))
@@ -342,7 +366,7 @@ func (e *Pipeline) resolveImages(ctx context.Context, sink job.Sink, t *config.T
 			}
 		}
 	}
-	e.record(sink, "resolve-images", start, res.Err, summariseImages(desired))
+	done(res.Err, summariseImages(desired))
 	return desired
 }
 
@@ -351,7 +375,7 @@ func (e *Pipeline) tagChangesMoreThanTheTag(ctx context.Context, t *config.Targe
 		return "", true
 	}
 
-	base, res := e.docker.DesiredImages(ctx, t, nil)
+	base, res := e.docker.DesiredImages(ctx, t, targetEnv(t, ""))
 	if res.Err != nil {
 		return "refusing to apply a tag: this stack does not resolve without one, so the tag would be choosing the image itself rather than its version; pin the repository in the compose file as image: repo:${" + t.ImageTagEnv + "} instead of image: ${" + t.ImageTagEnv + "}", false
 	}
@@ -414,13 +438,14 @@ func summariseImages(desired map[string]string) string {
 }
 
 func (e *Pipeline) snapshotContainers(ctx context.Context, sink job.Sink, name string, t *config.Target, env []string) ([]compose.Container, compose.Result) {
-	start := time.Now()
+	done := begin(sink, name)
 	containers, res := e.docker.Containers(ctx, t, env)
-	e.record(sink, name, start, res.Err, describe(containers))
+	done(res.Err, describe(containers))
 	return containers, res
 }
 
 func (e *Pipeline) step(sink job.Sink, name string, fn func() compose.Result) compose.Result {
+	sink.StartStep(name)
 	start := time.Now()
 	res := fn()
 
@@ -439,18 +464,25 @@ func (e *Pipeline) step(sink job.Sink, name string, fn func() compose.Result) co
 	return res
 }
 
-func (e *Pipeline) record(sink job.Sink, name string, start time.Time, err error, output string) {
-	step := job.Step{
-		Name:       name,
-		StartedAt:  start.UTC(),
-		DurationMS: time.Since(start).Milliseconds(),
-		OK:         err == nil,
-		Output:     output,
+// The name is captured once. Consumers pair the placeholder with the completed
+// step by name, so a name that drifts leaves the placeholder on screen forever.
+func begin(sink job.Sink, name string) func(error, string) {
+	sink.StartStep(name)
+	start := time.Now()
+
+	return func(err error, output string) {
+		step := job.Step{
+			Name:       name,
+			StartedAt:  start.UTC(),
+			DurationMS: time.Since(start).Milliseconds(),
+			OK:         err == nil,
+			Output:     output,
+		}
+		if err != nil {
+			step.Error = err.Error()
+		}
+		sink.AddStep(step)
 	}
-	if err != nil {
-		step.Error = err.Error()
-	}
-	sink.AddStep(step)
 }
 
 func wanted(t *config.Target, service string) bool {
@@ -553,11 +585,180 @@ func describe(containers []compose.Container) string {
 	return b.String()
 }
 
-func tagEnv(t *config.Target, tag string) []string {
-	if t.ImageTagEnv == "" || tag == "" {
-		return nil
+var authMarkers = []string{
+	"unauthorized",
+	"authentication required",
+	"pull access denied",
+	"no basic auth credentials",
+	"denied: requested access to the resource is denied",
+}
+
+// pullProgress are compose's per-image progress words. Only "Error" marks a
+// real failure; the rest are noise, and Interrupted just means cancelled.
+var pullProgress = map[string]bool{
+	"Pulling": true, "Pulled": true, "Interrupted": true, "Waiting": true,
+	"Downloading": true, "Extracting": true, "Verifying": true, "Skipped": true,
+	"Already": true, "Download": true, "Error": true,
+}
+
+var (
+	pullLineRe = regexp.MustCompile(`^(?:Image\s+)?(\S+)\s+(` + `Pulling|Pulled|Interrupted|Waiting|Downloading|Extracting|Verifying|Skipped|Already|Download|Error` + `)\b\s*(.*)$`)
+	httpCodeRe = regexp.MustCompile(`(\d{3}\s+[A-Za-z][A-Za-z ]*?)\s*$`)
+)
+
+type pullFailure struct {
+	refs      []string
+	reason    string
+	hosts     []string
+	cancelled int
+	auth      bool
+	parsed    bool
+}
+
+func parsePull(output string) pullFailure {
+	var f pullFailure
+	for line := range strings.SplitSeq(output, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "[+]") || strings.HasPrefix(line, "Error response from daemon:") {
+			continue
+		}
+		m := pullLineRe.FindStringSubmatch(line)
+		if m == nil || !pullProgress[m[2]] {
+			continue
+		}
+		f.parsed = true
+		if m[2] != "Error" {
+			f.cancelled++
+			continue
+		}
+		f.refs = append(f.refs, m[1])
+		if host := registryHost(m[1]); host != "" && !slices.Contains(f.hosts, host) {
+			f.hosts = append(f.hosts, host)
+		}
+		if f.reason == "" {
+			f.reason = tidyReason(m[3])
+		}
 	}
-	return []string{t.ImageTagEnv + "=" + tag}
+	lower := strings.ToLower(output)
+	f.auth = slices.ContainsFunc(authMarkers, func(marker string) bool { return strings.Contains(lower, marker) })
+	return f
+}
+
+func tidyReason(detail string) string {
+	detail = strings.TrimSpace(detail)
+	if detail == "" {
+		return ""
+	}
+	if m := httpCodeRe.FindStringSubmatch(detail); m != nil {
+		return strings.TrimSpace(m[1])
+	}
+	return clipReason(detail)
+}
+
+func clipReason(s string) string {
+	const max = 160
+	if len(s) <= max {
+		return s
+	}
+	return s[:max] + "..."
+}
+
+func (f pullFailure) where() string {
+	if len(f.hosts) > 0 {
+		return strings.Join(f.hosts, ", ")
+	}
+	return "the registry"
+}
+
+// summary is the job message, so it stays one line. The full compose output is
+// kept on the step, which is where dup logs --job reads it from.
+func (f pullFailure) summary(t *config.Target) string {
+	if !f.parsed || len(f.refs) == 0 {
+		return "docker compose pull failed"
+	}
+	msg := "pull failed: " + f.refs[0]
+	if f.reason != "" {
+		msg += " returned " + f.reason
+	}
+	if f.auth {
+		msg += ". Run: sudo dup auth " + t.Name
+	}
+	return msg
+}
+
+func (f pullFailure) detail(t *config.Target, output string) string {
+	if !f.parsed || len(f.refs) == 0 {
+		return "docker compose pull failed: " + strings.TrimSpace(output)
+	}
+
+	var b strings.Builder
+	b.WriteString("docker compose pull failed\n")
+	for _, ref := range f.refs {
+		fmt.Fprintf(&b, "\n  %s\n", ref)
+		if f.reason != "" {
+			fmt.Fprintf(&b, "    %s\n", f.reason)
+		}
+	}
+	if f.auth {
+		fmt.Fprintf(&b, "\n  %s rejected the credentials. dup runs docker as root, so a docker login\n", f.where())
+		b.WriteString("  you ran as your own user does not apply to it. Give this stack its own\n")
+		b.WriteString("  registry credentials with:\n\n")
+		fmt.Fprintf(&b, "    sudo dup auth %s\n", t.Name)
+	}
+	if f.cancelled > 0 {
+		fmt.Fprintf(&b, "\n  The other %d %s pulled or were cancelled, and are not the problem.\n",
+			f.cancelled, plural(f.cancelled, "image", "images"))
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return one
+	}
+	return many
+}
+
+func registryHosts(t *config.Target, desired map[string]string) []string {
+	var hosts []string
+	for service, ref := range desired {
+		if !wanted(t, service) {
+			continue
+		}
+		if host := registryHost(ref); host != "" && !slices.Contains(hosts, host) {
+			hosts = append(hosts, host)
+		}
+	}
+	slices.Sort(hosts)
+	return hosts
+}
+
+// registryHost applies docker's own rule: the first path element is a registry
+// only when it looks like a hostname, otherwise the image is a Docker Hub one.
+func registryHost(ref string) string {
+	head, _, ok := strings.Cut(ref, "/")
+	if !ok {
+		return ""
+	}
+	if head == "localhost" || strings.ContainsAny(head, ".:") {
+		return head
+	}
+	return ""
+}
+
+// targetEnv is every variable a docker invocation for this stack needs.
+// DOCKER_CONFIG is set only when the stack has its own credential store, so a
+// host that has never run `dup auth` keeps inheriting root's docker config
+// exactly as before.
+func targetEnv(t *config.Target, tag string) []string {
+	var env []string
+	if t.HasDockerConfig() {
+		env = append(env, "DOCKER_CONFIG="+t.DockerConfigDir())
+	}
+	if t.ImageTagEnv != "" && tag != "" {
+		env = append(env, t.ImageTagEnv+"="+tag)
+	}
+	return env
 }
 
 func previousTag(t *config.Target, before []compose.Container) string {

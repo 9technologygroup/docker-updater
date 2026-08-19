@@ -10,15 +10,17 @@ const (
 	ExecPath     = "/v1/exec"
 	CheckPath    = "/v1/check"
 	DiscoverPath = "/v1/discover"
+	ImagesPath   = "/v1/images"
 	HealthPath   = "/healthz"
 
 	MaxBodyBytes = 64 << 10
 
-	EventStep    = "step"
-	EventBefore  = "before"
-	EventAfter   = "after"
-	EventChanged = "changed"
-	EventResult  = "result"
+	EventStep      = "step"
+	EventStepStart = "step_start"
+	EventBefore    = "before"
+	EventAfter     = "after"
+	EventChanged   = "changed"
+	EventResult    = "result"
 )
 
 type HealthResult struct {
@@ -37,6 +39,15 @@ type ExecRequest struct {
 
 type CheckRequest struct {
 	Target string `json:"target"`
+}
+
+type ImagesRequest struct {
+	Target string `json:"target"`
+}
+
+type ImagesResult struct {
+	Images     map[string]string `json:"images,omitempty"`
+	Registries []string          `json:"registries,omitempty"`
 }
 
 type CheckResult struct {

@@ -124,6 +124,12 @@ nfpms:
       apk:
         dependencies:
           - docker
+    # apk runs post-upgrade rather than post-install when replacing a package,
+    # and nfpm fills that slot from this key alone. Without it an apk upgrade
+    # runs no script at all.
+    apk:
+      scripts:
+        postupgrade: packaging/postinstall.sh
     scripts:
       postinstall: packaging/postinstall.sh
       preremove: packaging/preremove.sh

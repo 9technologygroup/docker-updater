@@ -1,6 +1,9 @@
 package compose
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestParsePSHandlesNDJSON(t *testing.T) {
 	out := `{"Name":"app-web-1","Service":"web","State":"running","Status":"Up 2 hours (healthy)","Health":"healthy","Image":"ghcr.io/acme/web:latest"}
@@ -110,4 +113,60 @@ func TestAppendServicesUsesSeparator(t *testing.T) {
 	if bare := appendServices([]string{"compose", "pull"}, nil); len(bare) != 2 {
 		t.Errorf("no services should not add a separator, got %v", bare)
 	}
+}
+
+func TestChildEnvPassesThroughInheritedDockerConfig(t *testing.T) {
+	t.Setenv("DOCKER_CONFIG", "/root/.docker")
+
+	env := childEnv(nil)
+	if count := countKey(env, "DOCKER_CONFIG"); count != 1 {
+		t.Fatalf("DOCKER_CONFIG appears %d times, want 1: %v", count, env)
+	}
+	if got := valueOf(env, "DOCKER_CONFIG"); got != "/root/.docker" {
+		t.Fatalf("DOCKER_CONFIG = %q, want the inherited value untouched", got)
+	}
+}
+
+func TestChildEnvLetsAnExplicitValueWin(t *testing.T) {
+	t.Setenv("DOCKER_CONFIG", "/root/.docker")
+
+	env := childEnv([]string{"DOCKER_CONFIG=/etc/dup/docker/pmon", "PMON_TAG=1.2.3"})
+	if count := countKey(env, "DOCKER_CONFIG"); count != 1 {
+		t.Fatalf("DOCKER_CONFIG appears %d times, want exactly 1 so the child cannot pick the wrong one: %v", count, env)
+	}
+	if got := valueOf(env, "DOCKER_CONFIG"); got != "/etc/dup/docker/pmon" {
+		t.Fatalf("DOCKER_CONFIG = %q, want the explicit value", got)
+	}
+	if got := valueOf(env, "PMON_TAG"); got != "1.2.3" {
+		t.Fatalf("PMON_TAG = %q, want 1.2.3", got)
+	}
+}
+
+func TestChildEnvKeepsOtherInheritedVariables(t *testing.T) {
+	t.Setenv("DOCKER_CONFIG", "/root/.docker")
+	t.Setenv("HTTPS_PROXY", "http://proxy.example.com:3128")
+
+	env := childEnv([]string{"DOCKER_CONFIG=/etc/dup/docker/pmon"})
+	if got := valueOf(env, "HTTPS_PROXY"); got != "http://proxy.example.com:3128" {
+		t.Fatalf("HTTPS_PROXY = %q, want it still inherited", got)
+	}
+}
+
+func countKey(env []string, key string) int {
+	n := 0
+	for _, kv := range env {
+		if k, _, ok := strings.Cut(kv, "="); ok && k == key {
+			n++
+		}
+	}
+	return n
+}
+
+func valueOf(env []string, key string) string {
+	for _, kv := range env {
+		if k, v, ok := strings.Cut(kv, "="); ok && k == key {
+			return v
+		}
+	}
+	return ""
 }

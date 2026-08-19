@@ -36,6 +36,7 @@ func (s State) OK() bool {
 }
 
 type Sink interface {
+	StartStep(name string)
 	AddStep(Step)
 	SetBefore([]ServiceState)
 	SetAfter([]ServiceState)
@@ -56,6 +57,7 @@ type Step struct {
 	StartedAt  time.Time `json:"started_at"`
 	DurationMS int64     `json:"duration_ms"`
 	OK         bool      `json:"ok"`
+	Running    bool      `json:"running,omitempty"`
 	Error      string    `json:"error,omitempty"`
 	Output     string    `json:"output,omitempty"`
 }
@@ -135,6 +137,12 @@ func (j *Job) State() State {
 	return j.state
 }
 
+func (j *Job) StartStep(name string) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	j.steps = append(j.steps, Step{Name: name, StartedAt: time.Now().UTC(), Running: true})
+}
+
 func (j *Job) AddStep(s Step) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
@@ -149,6 +157,12 @@ func (j *Job) AddStep(s Step) {
 		}
 	}
 	j.logBytes += len(s.Output)
+	// The completed step replaces the placeholder StartStep left, rather than
+	// appending beside it and reporting every step twice.
+	if n := len(j.steps); n > 0 && j.steps[n-1].Running {
+		j.steps[n-1] = s
+		return
+	}
 	j.steps = append(j.steps, s)
 }
 
@@ -180,6 +194,15 @@ func (j *Job) finish(state State, message string) {
 	j.state = state
 	j.message = sanitise(message, 1000)
 	j.finishedAt = &now
+	// A step still marked running when the job ends never reported back, so it
+	// is the step that died. Recording it as running would outlive the process.
+	if n := len(j.steps); n > 0 && j.steps[n-1].Running {
+		j.steps[n-1].Running = false
+		j.steps[n-1].DurationMS = now.Sub(j.steps[n-1].StartedAt).Milliseconds()
+		if j.steps[n-1].Error == "" {
+			j.steps[n-1].Error = "did not complete"
+		}
+	}
 	j.mu.Unlock()
 	close(j.done)
 }

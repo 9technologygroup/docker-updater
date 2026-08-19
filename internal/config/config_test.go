@@ -593,3 +593,76 @@ func TestNoTargetsIsValid(t *testing.T) {
 		}
 	}
 }
+
+func TestDockerConfigDirDefaultsAndResolvesPerStack(t *testing.T) {
+	dir := stackDir(t)
+	path := writeConfig(t, `
+auth:
+  bearer_token: `+goodToken+`
+targets:
+  - name: pmon
+    dir: `+dir+`
+`)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.DockerConfigDir != DefaultDockerCfg {
+		t.Fatalf("docker_config_dir = %q, want %q", cfg.DockerConfigDir, DefaultDockerCfg)
+	}
+
+	target, ok := cfg.Target("pmon")
+	if !ok {
+		t.Fatal("target pmon not found")
+	}
+	if got, want := target.DockerConfigDir(), filepath.Join(DefaultDockerCfg, "pmon"); got != want {
+		t.Errorf("store = %q, want %q", got, want)
+	}
+	if target.HasDockerConfig() {
+		t.Error("a stack with no store on disk must not claim to have one")
+	}
+}
+
+func TestDockerConfigDirIsOverridable(t *testing.T) {
+	stack := stackDir(t)
+	store := t.TempDir()
+	path := writeConfig(t, `
+docker_config_dir: `+store+`
+auth:
+  bearer_token: `+goodToken+`
+targets:
+  - name: pmon
+    dir: `+stack+`
+`)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	target, _ := cfg.Target("pmon")
+	if got, want := target.DockerConfigDir(), filepath.Join(store, "pmon"); got != want {
+		t.Fatalf("store = %q, want %q", got, want)
+	}
+
+	if err := os.MkdirAll(target.DockerConfigDir(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(target.DockerConfigDir(), "config.json"), []byte(`{"auths":{}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if !target.HasDockerConfig() {
+		t.Error("a stack with a config.json in its store must report it")
+	}
+}
+
+func TestDockerConfigDirMustBeAbsolute(t *testing.T) {
+	path := writeConfig(t, `
+docker_config_dir: etc/dup/docker
+auth:
+  bearer_token: `+goodToken+`
+`)
+	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "absolute") {
+		t.Fatalf("err = %v, want a complaint about an absolute path", err)
+	}
+}

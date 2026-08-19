@@ -53,6 +53,10 @@ $ go list -deps ./cmd/dup-agent | grep internal/compose
 docker-updater/internal/compose
 ```
 
+It runs the other way too. The root agent must not link anything that makes an outbound
+network call, so CI fails the build if `cmd/dup-agent` reaches either the release checker or
+the registry client that `dup auth` uses to verify credentials.
+
 ### Why not a user in the `docker` group
 
 Because that is theatre. Docker socket access is root-equivalent:
@@ -100,7 +104,7 @@ for nothing from the agent's point of view.
 
 ## What the split does not protect
 
-- The agent is root and takes input over a socket the service account can write to. That is the trust boundary, and it is small on purpose: three endpoints, fixed JSON shapes with unknown fields rejected, a stack name looked up in the root-owned config, and a tag checked against the image-tag grammar. It re-validates everything rather than trusting the caller, holds its own per-stack lock, and caps concurrency.
+- The agent is root and takes input over a socket the service account can write to. That is the trust boundary, and it is small on purpose: four endpoints, fixed JSON shapes with unknown fields rejected, a stack name looked up in the root-owned config, and a tag checked against the image-tag grammar. It re-validates everything rather than trusting the caller, holds its own per-stack lock, and caps concurrency.
 - An attacker who lands as `dup` can still trigger redeploys of configured stacks. That is denial-of-service and a forced pull, not host compromise.
 - **If the service account can write a stack's `docker-compose.yml` or its `.env`, the whole thing collapses.** It could add `privileged: true` and a bind mount of `/`, then ask the agent to deploy it as root. `.env` is just as dangerous, since compose reads it unconditionally and it can set `COMPOSE_FILE`, redirecting the agent at a different compose file entirely. Both are audited, and the audit is blocking.
 
@@ -122,6 +126,9 @@ for nothing from the agent's point of view.
 | Notify URL is config-only | Never from a request, so the endpoint cannot be turned into an SSRF pivot. |
 | Source allowlist | Optional `allow_from`, with `X-Forwarded-For` honoured only from configured `trusted_proxies`. |
 | No CORS by default | A browser cannot use this API unless you name an origin explicitly. |
+| Registry credentials are never in `config.yml` | `sudo dup auth` writes them to `/etc/dup/docker/<stack>/config.json`, `root:root 0600` inside a `0700 root:root` directory. The service account cannot read any of it, and no credential ever crosses the agent socket. |
+| Credentials are verified before they are stored | `dup auth` checks the pair against the registry over HTTPS first. A wrong password is refused at the prompt and nothing is written; a registry that could not be reached is reported separately, and again nothing is written. It refuses to run as anything but root, before it prompts. |
+| The root agent never links a registry client | CI's `privilege-split` job fails the build if `cmd/dup-agent` links `internal/registry`, alongside the same rule for the release checker. The root process makes no outbound network calls; only the unprivileged CLI does, and only while `dup auth` is running. |
 
 ## File ownership, and the audit that enforces it
 
@@ -133,6 +140,9 @@ Nothing that decides what runs as root may be writable by the service account.
 | `/etc/dup/` | `root:dup` | `0750` |
 | `/etc/dup/config.yml` | `root:dup` | `0640` |
 | `bearer.token`, `github.secret` | `root:dup` | `0640` |
+| `/etc/dup/docker/` | `root:root` | `0700` |
+| `/etc/dup/docker/<stack>/` | `root:root` | `0700` |
+| `/etc/dup/docker/<stack>/config.json` | `root:root` | `0600` |
 | every stack `dir`, its compose file, its `.env` | `root:root` | not writable by `dup` |
 | every `pre_update.command` | `root:root` | not writable by `dup` |
 
@@ -172,7 +182,7 @@ This audit is **blocking, not advisory**. `install.sh` refuses to start the serv
 
 ## Secrets
 
-Two secrets live in `/etc/dup`, both `root:dup 0640`:
+Two secrets authenticate inbound callers. Both live in `/etc/dup`, both `root:dup 0640`:
 
 | File | What it authenticates |
 |---|---|
@@ -209,6 +219,31 @@ sudo systemctl restart dup
 ```
 
 Rotate `github.secret` the same way, then update it in the webhook settings.
+
+### Registry credentials
+
+`sudo dup auth` stores a stack's registry username and password at
+`/etc/dup/docker/<stack>/config.json`, `root:root 0600`, inside a `0700 root:root`
+directory. `/etc/dup` itself is `root:dup 0750`, so the group stops at that directory: the
+service account, which is the half of dup reachable from the network, cannot read a
+registry password at all, and never needs to. The root agent points `DOCKER_CONFIG` at the
+stack's directory when it runs docker, and only when a `config.json` is actually there.
+
+They are stored in docker's own format, an `auths` map holding `base64(username:password)`,
+exactly as `docker login` writes it. **Base64 is encoding, not encryption**, and nothing
+here pretends otherwise: what protects these files is their ownership and mode, the same as
+for `/root/.docker/config.json`.
+
+`dup auth` verifies a username and password against the registry over HTTPS before storing
+anything, so a typo is refused at the prompt rather than written to disk and discovered on
+the next pull. It refuses a redirect onto another host and refuses a token endpoint served
+over plain HTTP, so a registry's own answer cannot walk the credentials elsewhere. It
+refuses to run as anything but root, before it prompts for anything.
+
+`dup auth --list` prints the stack, the registry host, the username and when the store was
+last written. It never prints the secret. To rotate one, run `sudo dup auth <stack> --force`
+and enter the new password; the file is replaced in one rename, and the agent picks it up on
+the next pull with no restart needed.
 
 ### What is not a secret
 
